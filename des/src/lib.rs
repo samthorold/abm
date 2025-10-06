@@ -30,25 +30,52 @@ impl<T> PartialOrd for Event<T> {
     }
 }
 
-pub trait Agent<T> {
-    fn act(&self, current_t: usize, data: &T) -> Vec<(usize, T)> {
-        Vec::<(usize, T)>::new()
+pub struct Response<T> {
+    events: Vec<(usize, T)>,
+    agents: Vec<Box<dyn Agent<T>>>,
+}
+
+impl<T> Response<T> {
+    pub fn new() -> Response<T> {
+        Response {
+            events: Vec::<(usize, T)>::new(),
+            agents: Vec::<Box<dyn Agent<T>>>::new(),
+        }
     }
 }
 
-struct EventLoop<T> {
+pub trait Agent<T> {
+    fn act(&self, _current_t: usize, _data: &T) -> Response<T> {
+        Response::new()
+    }
+}
+
+pub struct EventLoop<T> {
     queue: BinaryHeap<Event<T>>,
     current_t: usize,
     agents: Vec<Box<dyn Agent<T>>>,
 }
 
 impl<T> EventLoop<T> {
+    pub fn new(events: Vec<(usize, T)>, agents: Vec<Box<dyn Agent<T>>>) -> EventLoop<T> {
+        let outer_events: Vec<Event<T>> = events
+            .into_iter()
+            .map(|(t, data)| Event { t, data })
+            .collect();
+        EventLoop {
+            agents,
+            queue: BinaryHeap::from(outer_events),
+            current_t: 0,
+        }
+    }
+
     fn broadcast(&mut self) {
         if let Some(event) = self.queue.pop() {
             self.current_t = event.t;
+            let mut new_agents = Vec::<Box<dyn Agent<T>>>::new();
             for agent in &mut self.agents {
-                let new_events = agent.act(self.current_t, &event.data);
-                for new_event in new_events {
+                let response = agent.act(self.current_t, &event.data);
+                for new_event in response.events {
                     if new_event.0 <= self.current_t {
                         self.queue.push(Event {
                             t: new_event.0,
@@ -56,14 +83,19 @@ impl<T> EventLoop<T> {
                         })
                     }
                 }
+                for new_agent in response.agents {
+                    new_agents.push(new_agent);
+                }
+            }
+            for new_agent in new_agents {
+                self.agents.push(new_agent);
             }
         }
     }
 
     pub fn run(&mut self) {
-        self.broadcast();
-        if self.queue.len() > 0 {
-            return;
+        while let Some(_) = self.queue.peek() {
+            self.broadcast();
         }
     }
 }
@@ -97,10 +129,42 @@ mod tests {
             BinaryHeap::from([Event { t: 1, data: 1 }, Event { t: 2, data: 2 }]);
         let agents: Vec<Box<dyn Agent<u8>>> = vec![Box::new(NoddyAgent {})];
 
-        let event_loop = EventLoop {
+        let mut event_loop = EventLoop {
             queue,
             current_t: 0,
             agents,
         };
+
+        event_loop.run();
+
+        assert_eq!(event_loop.current_t, 2)
+    }
+
+    #[test]
+    fn new_agent() {
+        struct NoddyAgent {}
+        impl Agent<u8> for NoddyAgent {
+            fn act(&self, _current_t: usize, _data: &u8) -> Response<u8> {
+                Response {
+                    events: Vec::<(usize, u8)>::new(),
+                    agents: vec![Box::new(NoddyAgent {})],
+                }
+            }
+        }
+        let queue: BinaryHeap<Event<u8>> =
+            BinaryHeap::from([Event { t: 1, data: 1 }, Event { t: 2, data: 2 }]);
+        let agents: Vec<Box<dyn Agent<u8>>> = vec![Box::new(NoddyAgent {})];
+
+        let mut event_loop = EventLoop {
+            queue,
+            current_t: 0,
+            agents,
+        };
+
+        event_loop.run();
+
+        // First event: 1 new agent
+        // Second event: 2 new agents
+        assert_eq!(event_loop.agents.len(), 4)
     }
 }
