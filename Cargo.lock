@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "des"
 version = "0.1.0"
+
+[[package]]
+name = "simple_queue"
+version = "0.1.0"
+dependencies = [
+ "des",
+]
