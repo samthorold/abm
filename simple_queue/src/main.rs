@@ -1,9 +1,12 @@
 use std::collections::{HashSet, VecDeque};
 
+#[derive(Debug)]
 enum Event {
-    ResourceRequested(usize, usize), // resource ID, consumer ID
-    ResourceReleased(usize, usize),  // resource ID, consumer ID
-    ResourceAcquired(usize, usize),  // resource ID, consumer ID
+    Start,
+    ResourceRequested(usize, usize),      // resource ID, consumer ID
+    ResourceRequestExpired(usize, usize), // resource ID, consumer ID
+    ResourceReleased(usize, usize),       // resource ID, consumer ID
+    ResourceAcquired(usize, usize),       // resource ID, consumer ID
 }
 
 struct Consumer {
@@ -19,6 +22,74 @@ impl des::Agent<Event> for Consumer {
                 }
                 println!("[{}] Consumer {} acquired Resource {}", current_t, cid, rid);
                 des::Response::new()
+            }
+            _ => des::Response::new(),
+        }
+    }
+}
+
+struct ConsumerProcess {
+    resource_id: usize,
+    next_consumer_id: usize,
+    arrival_interval: usize,
+    consume_duration: usize,
+    wait_duration: usize,
+}
+
+impl ConsumerProcess {
+    fn new(resource_id: usize) -> ConsumerProcess {
+        ConsumerProcess {
+            resource_id,
+            next_consumer_id: 0,
+            arrival_interval: 1,
+            consume_duration: 2,
+            wait_duration: 4,
+        }
+    }
+
+    fn new_consumer(&mut self, current_t: usize) -> ((usize, Event), (usize, Event)) {
+        let consumer_id = self.next_consumer_id;
+        self.next_consumer_id += 1;
+        let request = (
+            current_t + self.arrival_interval,
+            Event::ResourceRequested(self.resource_id, consumer_id),
+        );
+        let expire = (
+            current_t + self.arrival_interval + self.wait_duration,
+            Event::ResourceRequestExpired(self.resource_id, consumer_id),
+        );
+        (request, expire)
+    }
+}
+
+impl des::Agent<Event> for ConsumerProcess {
+    fn act(&mut self, current_t: usize, data: &Event) -> des::Response<Event> {
+        // println!("[{}] ConsumerProcess {:#?}", current_t, data);
+        match data {
+            Event::Start => {
+                let (request, expire) = self.new_consumer(current_t);
+                let events = vec![request, expire];
+                des::Response::events(events)
+            }
+            Event::ResourceAcquired(rid, cid) => {
+                if &self.resource_id != rid {
+                    return des::Response::new();
+                }
+                println!("[{}] Consumer {} acquired Resource {}", current_t, cid, rid);
+                let release = (
+                    current_t + self.consume_duration,
+                    Event::ResourceReleased(self.resource_id, *cid),
+                );
+                des::Response::event(release.0, release.1)
+            }
+            Event::ResourceRequested(rid, _cid) => {
+                if &self.resource_id != rid {
+                    return des::Response::new();
+                }
+
+                let (request, expire) = self.new_consumer(current_t);
+                let events = vec![request, expire];
+                des::Response::events(events)
             }
             _ => des::Response::new(),
         }
@@ -47,6 +118,7 @@ impl Resource {
 
 impl des::Agent<Event> for Resource {
     fn act(&mut self, current_t: usize, data: &Event) -> des::Response<Event> {
+        // println!("[{}] Resource {:#?}", current_t, data);
         match data {
             Event::ResourceRequested(rid, cid) => {
                 // skip if the event has nothing to do with this resource
@@ -66,7 +138,6 @@ impl des::Agent<Event> for Resource {
                     self.consumer_queue.push_back(*cid);
                     self.consumers_active.insert(*cid);
                     // there's nothing really to do here
-                    // the consumer has already added a MaybeResourceRequestExpired event
                     des::Response::new()
                 } else {
                     // resource not fully occupied
@@ -89,22 +160,40 @@ impl des::Agent<Event> for Resource {
 
                 self.consumer_count -= 1;
 
+                println!("  Checking for queued consumers ...");
                 while let Some(consumer_id) = self.consumer_queue.pop_front() {
+                    println!("    {}", consumer_id);
                     if self.consumers_active.contains(&consumer_id) {
                         self.consumers_active.remove(&consumer_id);
                         self.consumer_count += 1;
                         return des::Response::event(
                             current_t,
-                            Event::ResourceAcquired(consumer_id, *rid),
+                            Event::ResourceAcquired(*rid, consumer_id),
                         );
                     } else {
                         println!(
-                            "  Consumer {} request for Resource {} had expired",
+                            "    Consumer {} request for Resource {} had expired",
                             consumer_id, rid
                         );
                     };
                 }
                 println!("  No consumers waiting for Resource {}", rid);
+                des::Response::new()
+            }
+            Event::ResourceRequestExpired(rid, cid) => {
+                // skip if the event has nothing to do with this resource
+                if rid != &self.resource_id {
+                    return des::Response::new();
+                }
+
+                let removed = self.consumers_active.remove(cid);
+
+                if removed {
+                    println!(
+                        "[{}] Consumer {} request for Resource {} expired",
+                        current_t, cid, rid
+                    );
+                }
                 des::Response::new()
             }
             _ => des::Response::new(),
@@ -115,16 +204,13 @@ impl des::Agent<Event> for Resource {
 fn main() {
     println!("DES: Simple Queue");
 
-    let events = vec![
-        (1, Event::ResourceRequested(0, 0)),
-        (5, Event::ResourceReleased(0, 0)),
-    ];
+    let events = vec![(0, Event::Start)];
     let agents: Vec<Box<dyn des::Agent<Event>>> = vec![
-        Box::new(Consumer { consumer_id: 0 }),
+        Box::new(ConsumerProcess::new(0)),
         Box::new(Resource::new(0, 1)),
     ];
 
     let mut event_loop = des::EventLoop::new(events, agents);
 
-    event_loop.run()
+    event_loop.run(10)
 }

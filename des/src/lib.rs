@@ -49,6 +49,13 @@ impl<T> Response<T> {
             agents: Vec::<Box<dyn Agent<T>>>::new(),
         }
     }
+
+    pub fn events(events: Vec<(usize, T)>) -> Response<T> {
+        Response {
+            events,
+            agents: Vec::<Box<dyn Agent<T>>>::new(),
+        }
+    }
 }
 
 pub trait Agent<T> {
@@ -83,7 +90,7 @@ impl<T> EventLoop<T> {
             for agent in &mut self.agents {
                 let response = agent.act(self.current_t, &event.data);
                 for new_event in response.events {
-                    if new_event.0 <= self.current_t {
+                    if new_event.0 >= self.current_t {
                         self.queue.push(Event {
                             t: new_event.0,
                             data: new_event.1,
@@ -100,8 +107,11 @@ impl<T> EventLoop<T> {
         }
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self, until: usize) {
         while let Some(_) = self.queue.peek() {
+            if self.current_t == until {
+                return;
+            }
             self.broadcast();
         }
     }
@@ -142,9 +152,22 @@ mod tests {
             agents,
         };
 
-        event_loop.run();
+        event_loop.run(10);
 
         assert_eq!(event_loop.current_t, 2)
+    }
+
+    #[test]
+    fn new_event() {
+        struct NoddyAgent {}
+        impl Agent<u8> for NoddyAgent {
+            fn act(&mut self, current_t: usize, _data: &u8) -> Response<u8> {
+                Response::event(current_t + 1, 0)
+            }
+        }
+        let mut event_loop = EventLoop::new(vec![(0, 1)], vec![Box::new(NoddyAgent {})]);
+        event_loop.run(10);
+        assert_eq!(event_loop.current_t, 10);
     }
 
     #[test]
@@ -168,7 +191,7 @@ mod tests {
             agents,
         };
 
-        event_loop.run();
+        event_loop.run(10);
 
         // First event: 1 new agent
         // Second event: 2 new agents
