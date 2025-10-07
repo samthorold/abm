@@ -31,8 +31,8 @@ impl<T> PartialOrd for Event<T> {
 }
 
 pub struct Response<T> {
-    events: Vec<(usize, T)>,
-    agents: Vec<Box<dyn Agent<T>>>,
+    pub events: Vec<(usize, T)>,
+    pub agents: Vec<Box<dyn Agent<T>>>,
 }
 
 impl<T> Response<T> {
@@ -42,10 +42,17 @@ impl<T> Response<T> {
             agents: Vec::<Box<dyn Agent<T>>>::new(),
         }
     }
+
+    pub fn event(t: usize, event: T) -> Response<T> {
+        Response {
+            events: vec![(t, event)],
+            agents: Vec::<Box<dyn Agent<T>>>::new(),
+        }
+    }
 }
 
 pub trait Agent<T> {
-    fn act(&self, _current_t: usize, _data: &T) -> Response<T> {
+    fn act(&mut self, _current_t: usize, _data: &T) -> Response<T> {
         Response::new()
     }
 }
@@ -144,7 +151,7 @@ mod tests {
     fn new_agent() {
         struct NoddyAgent {}
         impl Agent<u8> for NoddyAgent {
-            fn act(&self, _current_t: usize, _data: &u8) -> Response<u8> {
+            fn act(&mut self, _current_t: usize, _data: &u8) -> Response<u8> {
                 Response {
                     events: Vec::<(usize, u8)>::new(),
                     agents: vec![Box::new(NoddyAgent {})],
