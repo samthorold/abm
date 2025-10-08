@@ -30,54 +30,60 @@ impl<T> PartialOrd for Event<T> {
     }
 }
 
-pub struct Response<T> {
+pub struct Response<T, S> {
     pub events: Vec<(usize, T)>,
-    pub agents: Vec<Box<dyn Agent<T>>>,
+    pub agents: Vec<Box<dyn Agent<T, S>>>,
 }
 
-impl<T> Default for Response<T> {
+impl<T, S> Default for Response<T, S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> Response<T> {
-    pub fn new() -> Response<T> {
+impl<T, S> Response<T, S> {
+    pub fn new() -> Response<T, S> {
         Response {
             events: Vec::<(usize, T)>::new(),
-            agents: Vec::<Box<dyn Agent<T>>>::new(),
+            agents: Vec::<Box<dyn Agent<T, S>>>::new(),
         }
     }
 
-    pub fn event(t: usize, event: T) -> Response<T> {
+    pub fn event(t: usize, event: T) -> Response<T, S> {
         Response {
             events: vec![(t, event)],
-            agents: Vec::<Box<dyn Agent<T>>>::new(),
+            agents: Vec::<Box<dyn Agent<T, S>>>::new(),
         }
     }
 
-    pub fn events(events: Vec<(usize, T)>) -> Response<T> {
+    pub fn events(events: Vec<(usize, T)>) -> Response<T, S> {
         Response {
             events,
-            agents: Vec::<Box<dyn Agent<T>>>::new(),
+            agents: Vec::<Box<dyn Agent<T, S>>>::new(),
         }
     }
 }
 
-pub trait Agent<T> {
-    fn act(&mut self, _current_t: usize, _data: &T) -> Response<T> {
+pub trait Agent<T, S> {
+    fn act(&mut self, _current_t: usize, _data: &T) -> Response<T, S> {
         Response::new()
     }
+
+    fn stats(&self) -> S;
 }
 
-pub struct EventLoop<T> {
+pub struct EventLoop<T, S> {
     queue: BinaryHeap<Event<T>>,
     current_t: usize,
-    agents: Vec<Box<dyn Agent<T>>>,
+    agents: Vec<Box<dyn Agent<T, S>>>,
 }
 
-impl<T> EventLoop<T> {
-    pub fn new(events: Vec<(usize, T)>, agents: Vec<Box<dyn Agent<T>>>) -> EventLoop<T> {
+impl<T, S> EventLoop<T, S> {
+    pub fn stats(&self) -> Vec<S> {
+        let s = self.agents.iter().map(|agent| agent.stats()).collect();
+        s
+    }
+    pub fn new(events: Vec<(usize, T)>, agents: Vec<Box<dyn Agent<T, S>>>) -> EventLoop<T, S> {
         let outer_events: Vec<Event<T>> = events
             .into_iter()
             .map(|(t, data)| Event { t, data })
@@ -92,7 +98,7 @@ impl<T> EventLoop<T> {
     fn broadcast(&mut self) {
         if let Some(event) = self.queue.pop() {
             self.current_t = event.t;
-            let mut new_agents = Vec::<Box<dyn Agent<T>>>::new();
+            let mut new_agents = Vec::<Box<dyn Agent<T, S>>>::new();
             for agent in &mut self.agents {
                 let response = agent.act(self.current_t, &event.data);
                 for new_event in response.events {
@@ -146,11 +152,18 @@ mod tests {
     #[test]
     fn noddy_run() {
         struct NoddyAgent {}
-        impl Agent<u8> for NoddyAgent {}
+        enum Stats {
+            A,
+        }
+        impl Agent<u8, Stats> for NoddyAgent {
+            fn stats(&self) -> Stats {
+                Stats::A
+            }
+        }
 
         let queue: BinaryHeap<Event<u8>> =
             BinaryHeap::from([Event { t: 1, data: 1 }, Event { t: 2, data: 2 }]);
-        let agents: Vec<Box<dyn Agent<u8>>> = vec![Box::new(NoddyAgent {})];
+        let agents: Vec<Box<dyn Agent<u8, Stats>>> = vec![Box::new(NoddyAgent {})];
 
         let mut event_loop = EventLoop {
             queue,
@@ -166,9 +179,15 @@ mod tests {
     #[test]
     fn new_event() {
         struct NoddyAgent {}
-        impl Agent<u8> for NoddyAgent {
-            fn act(&mut self, current_t: usize, _data: &u8) -> Response<u8> {
+        enum Stats {
+            A,
+        }
+        impl Agent<u8, Stats> for NoddyAgent {
+            fn act(&mut self, current_t: usize, _data: &u8) -> Response<u8, Stats> {
                 Response::event(current_t + 1, 0)
+            }
+            fn stats(&self) -> Stats {
+                Stats::A
             }
         }
         let mut event_loop = EventLoop::new(vec![(0, 1)], vec![Box::new(NoddyAgent {})]);
@@ -179,17 +198,23 @@ mod tests {
     #[test]
     fn new_agent() {
         struct NoddyAgent {}
-        impl Agent<u8> for NoddyAgent {
-            fn act(&mut self, _current_t: usize, _data: &u8) -> Response<u8> {
+        enum Stats {
+            A,
+        }
+        impl Agent<u8, Stats> for NoddyAgent {
+            fn act(&mut self, _current_t: usize, _data: &u8) -> Response<u8, Stats> {
                 Response {
                     events: Vec::<(usize, u8)>::new(),
                     agents: vec![Box::new(NoddyAgent {})],
                 }
             }
+            fn stats(&self) -> Stats {
+                Stats::A
+            }
         }
         let queue: BinaryHeap<Event<u8>> =
             BinaryHeap::from([Event { t: 1, data: 1 }, Event { t: 2, data: 2 }]);
-        let agents: Vec<Box<dyn Agent<u8>>> = vec![Box::new(NoddyAgent {})];
+        let agents: Vec<Box<dyn Agent<u8, Stats>>> = vec![Box::new(NoddyAgent {})];
 
         let mut event_loop = EventLoop {
             queue,

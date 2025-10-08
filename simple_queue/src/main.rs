@@ -8,9 +8,9 @@ fn main() {
     let events = vec![(0, simple_queue::Event::Start)];
 
     let counter_id = 0;
-    let concurrent_customers = 2;
+    let concurrent_customers = 1;
 
-    let agents: Vec<Box<dyn des::Agent<simple_queue::Event>>> = vec![
+    let agents: Vec<Box<dyn des::Agent<simple_queue::Event, simple_queue::Stats>>> = vec![
         Box::new(simple_queue::ConsumerProcess::new(
             counter_id,
             1.0 / 100.0,
@@ -25,5 +25,7 @@ fn main() {
 
     let mut event_loop = des::EventLoop::new(events, agents);
 
-    event_loop.run(1000)
+    event_loop.run(1000);
+
+    println!("{:#?}", event_loop.stats());
 }
