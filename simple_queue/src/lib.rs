@@ -36,6 +36,11 @@ pub struct ConsumerProcess {
     arrival_interval: Geometric,
     consume_duration: Normal<f64>,
     wait_duration: Normal<f64>,
+    // arrival_count
+    // acquired_count
+    // expiry_count
+    // consume_sum
+    // wait_sum
 }
 
 impl ConsumerProcess {

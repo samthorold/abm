@@ -1,4 +1,3 @@
-
 fn main() {
     println!("DES: Simple Queue");
 
@@ -9,7 +8,7 @@ fn main() {
     let events = vec![(0, simple_queue::Event::Start)];
 
     let counter_id = 0;
-    let concurrent_customers = 1;
+    let concurrent_customers = 2;
 
     let agents: Vec<Box<dyn des::Agent<simple_queue::Event>>> = vec![
         Box::new(simple_queue::ConsumerProcess::new(
