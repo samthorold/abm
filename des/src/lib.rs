@@ -109,7 +109,7 @@ impl<T> EventLoop<T> {
 
     pub fn run(&mut self, until: usize) {
         while let Some(_) = self.queue.peek() {
-            if self.current_t == until {
+            if self.current_t >= until {
                 return;
             }
             self.broadcast();
