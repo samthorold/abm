@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 
-use rand_distr::{Distribution, Exp, Geometric, Normal};
+use rand_distr::{Distribution, Geometric, Normal};
 
 #[derive(Debug)]
 pub enum Event {

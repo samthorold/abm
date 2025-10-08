@@ -1,4 +1,3 @@
-use simple_queue;
 
 fn main() {
     println!("DES: Simple Queue");
