@@ -35,6 +35,12 @@ pub struct Response<T> {
     pub agents: Vec<Box<dyn Agent<T>>>,
 }
 
+impl<T> Default for Response<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Response<T> {
     pub fn new() -> Response<T> {
         Response {
@@ -108,7 +114,7 @@ impl<T> EventLoop<T> {
     }
 
     pub fn run(&mut self, until: usize) {
-        while let Some(_) = self.queue.peek() {
+        while self.queue.peek().is_some() {
             if self.current_t >= until {
                 return;
             }
