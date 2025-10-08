@@ -5,6 +5,12 @@ use rand_distr::{Distribution, Geometric, Normal};
 #[derive(Debug, Clone)]
 pub struct ConsumerStats {}
 
+impl Default for ConsumerStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConsumerStats {
     pub fn new() -> Self {
         ConsumerStats {}
@@ -18,6 +24,12 @@ pub struct ResourceStats {
     expiry_count: usize,
     consume_sum: usize,
     wait_sum: usize,
+}
+
+impl Default for ResourceStats {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResourceStats {

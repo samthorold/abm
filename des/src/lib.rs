@@ -80,8 +80,8 @@ pub struct EventLoop<T, S> {
 
 impl<T, S> EventLoop<T, S> {
     pub fn stats(&self) -> Vec<S> {
-        let s = self.agents.iter().map(|agent| agent.stats()).collect();
-        s
+        
+        self.agents.iter().map(|agent| agent.stats()).collect()
     }
     pub fn new(events: Vec<(usize, T)>, agents: Vec<Box<dyn Agent<T, S>>>) -> EventLoop<T, S> {
         let outer_events: Vec<Event<T>> = events
