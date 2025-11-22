@@ -112,7 +112,7 @@ When translating research papers:
 - **Events scheduled in the past are dropped**: See des/src/lib.rs:105-110
 - **Agents are trait objects**: Stored as `Vec<Box<dyn Agent<T, S>>>` for heterogeneous collections
 - **BinaryHeap ordering**: Event ordering is reversed (line 23) to create min-heap behavior
-- **Stats collection**: Call `event_loop.stats()` after `run()` to get Vec<S> from all agents
+- **Stats collection**: Call `event_loop.stats()` after `run()` to get `Vec<S>` from all agents
 - **Broadcast semantics**: All agents receive all events; agents filter by relevance (see Resource/ConsumerProcess pattern)
 
 ## Target Papers for Recreation
