@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This project translates Agent-Based Model (ABM) research papers into modular Rust simulations using a Discrete Event Simulation (DES) framework. The goal is to recreate economic and social simulation models from academic literature (e.g., Axelrod's cooperation models, Kirman & Vriend's fish market, zero-intelligence traders) as concrete, runnable implementations.
 
+## Prior Art Directory
+
+The `/prior-art` directory contains in-depth summaries of research papers that are candidates for implementation as simulations.
+
+**When to read these summaries:**
+- At the start of implementing a new simulation module based on a paper
+- Read the primary paper summary first, then related summaries for context (e.g., if implementing Kirman & Vriend, also review other market/agent papers)
+
+**When NOT to read these summaries:**
+- General questions about the codebase or DES framework
+- Debugging or refactoring existing simulations
+- Build/test issues
+
+These files are detailed and should be consulted deliberately when translating research into code.
+
 ## Core Architecture
 
 ### DES Framework (`des` crate)
