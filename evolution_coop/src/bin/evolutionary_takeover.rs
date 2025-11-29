@@ -14,11 +14,11 @@ fn main() {
     let defector_count = total_population - tft_count;
 
     let num_kinship_groups = 10;
-    let encounters_per_generation = 500; // Even more encounters
+    let encounters_per_generation = 100; // Moderate number of encounters
     let rounds_per_match = 10;
-    let kinship_preference = 0.95; // 95% within-group matching (very strong kinship)
-    let mutation_rate = 0.002; // 0.2% mutation rate (even lower)
-    let max_generations = 40; // Enough generations to see takeover
+    let kinship_preference = 0.8; // 80% within-group matching (realistic kinship effect)
+    let mutation_rate = 0.01; // 1% mutation rate (allows exploration)
+    let max_generations = 50; // Longer to observe full dynamics
 
     println!("Parameters:");
     println!("  Population size: {}", total_population);
