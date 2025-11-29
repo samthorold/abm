@@ -1,7 +1,19 @@
 [package]
 name = "evolution_coop"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "tournament"
+path = "src/main.rs"
+
+[[bin]]
+name = "initial_viability"
+path = "src/bin/initial_viability.rs"
+
+[[bin]]
+name = "evolutionary_takeover"
+path = "src/bin/evolutionary_takeover.rs"
 
 [dependencies]
 des = { path = "../des" }
