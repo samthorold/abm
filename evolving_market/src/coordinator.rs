@@ -86,11 +86,14 @@ impl MarketCoordinator {
                 }
 
                 // Seller chooses price
-                let price = seller.choose_price();
+                let (price, rule_idx) = seller.choose_price();
 
                 // Buyer responds
                 let buyer = &mut buyers[buyer_id];
                 let accepted = buyer.respond_to_price(price);
+
+                // Record the price offer for learning
+                seller.record_price_offer(rule_idx, accepted, price);
 
                 if accepted {
                     // Transaction successful

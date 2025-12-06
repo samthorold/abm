@@ -115,13 +115,27 @@ impl BuyerAgent {
                 // Accepted price
                 if let Some(price) = self.price_offered {
                     let surplus = self.p_out as i32 - price as i32;
-                    // Normalize to [0, 1]
-                    (surplus as f64 / self.p_out as f64).max(0.0)
+                    if surplus >= 0 {
+                        // Good deal - normalize to [0, 1]
+                        surplus as f64 / self.p_out as f64
+                    } else {
+                        // Bad deal - negative reward (loss)
+                        0.0
+                    }
                 } else {
                     0.0
                 }
+            } else if let Some(price) = self.price_offered {
+                // Rejected price - reward for avoiding bad deals
+                if price > self.p_out {
+                    // Good rejection - avoided guaranteed loss
+                    0.5 // Medium reward for avoiding a bad deal
+                } else {
+                    // Rejected a potentially good price
+                    0.0
+                }
             } else {
-                // Rejected price or denied service
+                // Denied service
                 0.0
             };
 
@@ -225,7 +239,9 @@ pub struct SellerAgent {
     // Daily state
     current_day: usize,
     queue: Vec<usize>, // Buyer IDs in queue
-    active_price_rules: Vec<(usize, usize)>, // (rule_idx, price_offered, times_used)
+
+    // Track rule usage for learning (rule_idx -> (times_used, total_revenue))
+    price_rule_usage: Vec<(usize, usize)>, // parallel to price_rules
 
     // RNG
     rng: rand::rngs::StdRng,
@@ -246,6 +262,8 @@ impl SellerAgent {
             .map(|price| Rule::new((), price))
             .collect();
 
+        let n_rules = price_rules.len();
+
         SellerAgent {
             id,
             p_in,
@@ -255,27 +273,47 @@ impl SellerAgent {
             gross_revenue: 0,
             current_day: 0,
             queue: Vec::new(),
-            active_price_rules: Vec::new(),
+            price_rule_usage: vec![(0, 0); n_rules],
             rng: rand::rngs::StdRng::seed_from_u64(seed),
         }
     }
 
     /// Choose a price to offer (pub for coordinator access)
-    pub fn choose_price(&mut self) -> usize {
+    /// Returns (price, rule_idx) so we can track which rule was used
+    pub fn choose_price(&mut self) -> (usize, usize) {
         let idx = stochastic_auction(&self.price_rules, 0.1, 0.025, &mut self.rng);
-        self.price_rules[idx].action
+        let price = self.price_rules[idx].action;
+        (price, idx)
+    }
+
+    /// Record that a price rule was used and whether it was accepted
+    /// This tracks usage for learning updates
+    pub fn record_price_offer(&mut self, rule_idx: usize, accepted: bool, price: usize) {
+        let (ref mut times_used, ref mut total_revenue) = self.price_rule_usage[rule_idx];
+        *times_used += 1;
+        if accepted {
+            *total_revenue += price;
+        }
     }
 
     /// Update pricing rule strengths based on revenue (pub for main loop)
     pub fn update_strengths(&mut self, learning_rate: f64) {
         let max_price = self.price_rules.len() - 1;
 
-        // Update each pricing rule based on how it performed
-        for rule in &mut self.price_rules {
-            // Simple reward: if this price was offered and accepted, reward based on price
-            // For now, we'll update based on average revenue per offer
-            // This is simplified; full model tracks per-rule usage
-            let reward = self.gross_revenue as f64 / (self.initial_stock as f64 * max_price as f64);
+        // Update each pricing rule based on its actual usage and performance
+        for (idx, rule) in self.price_rules.iter_mut().enumerate() {
+            let (times_used, total_revenue) = self.price_rule_usage[idx];
+
+            let reward = if times_used > 0 {
+                // Average revenue per use, normalized to [0, 1]
+                let avg_revenue = total_revenue as f64 / times_used as f64;
+                avg_revenue / max_price as f64
+            } else {
+                // Rule not used - no update (keeps current strength)
+                // This maintains exploration potential
+                continue;
+            };
+
             rule.strength = update_strength(rule.strength, reward, learning_rate);
         }
     }
@@ -285,7 +323,10 @@ impl SellerAgent {
         self.stock = self.initial_stock;
         self.gross_revenue = 0;
         self.queue.clear();
-        self.active_price_rules.clear();
+        // Reset usage tracking for new day
+        for usage in &mut self.price_rule_usage {
+            *usage = (0, 0);
+        }
     }
 }
 
@@ -329,3 +370,205 @@ impl Agent<MarketEvent, MarketStats> for SellerAgent {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_buyer_learns_to_reject_bad_prices() {
+        let mut buyer = BuyerAgent::new(0, 15, 10, 20, 42); // p_out = 15
+
+        // Simulate many days where high prices are offered
+        for _ in 0..100 {
+            buyer.reset_daily_state();
+
+            // Offer price = 20 (above p_out)
+            let accepts = buyer.respond_to_price(20);
+
+            if accepts {
+                // If accidentally accepted, gets 0 reward (bad deal)
+                buyer.transaction_completed = true;
+            }
+            // If rejected, gets 0.5 reward (good decision)
+
+            buyer.update_strengths(0.05);
+        }
+
+        // Find the reject rule for price=20
+        let reject_rule_idx = buyer
+            .price_acceptance_rules
+            .iter()
+            .position(|r| r.condition == 20 && r.action == false)
+            .unwrap();
+
+        let accept_rule_idx = buyer
+            .price_acceptance_rules
+            .iter()
+            .position(|r| r.condition == 20 && r.action == true)
+            .unwrap();
+
+        // Reject rule should be stronger than accept rule
+        assert!(
+            buyer.price_acceptance_rules[reject_rule_idx].strength
+                > buyer.price_acceptance_rules[accept_rule_idx].strength,
+            "Buyer should learn to reject prices above p_out"
+        );
+    }
+
+    #[test]
+    fn test_buyer_learns_to_accept_good_prices() {
+        let mut buyer = BuyerAgent::new(0, 15, 10, 20, 42); // p_out = 15
+
+        // Simulate many days where good prices are offered
+        for _ in 0..100 {
+            buyer.reset_daily_state();
+
+            // Offer price = 10 (below p_out, good deal)
+            let accepts = buyer.respond_to_price(10);
+
+            if accepts {
+                buyer.transaction_completed = true;
+            }
+
+            buyer.update_strengths(0.05);
+        }
+
+        // Find the accept rule for price=10
+        let accept_rule_idx = buyer
+            .price_acceptance_rules
+            .iter()
+            .position(|r| r.condition == 10 && r.action == true)
+            .unwrap();
+
+        let reject_rule_idx = buyer
+            .price_acceptance_rules
+            .iter()
+            .position(|r| r.condition == 10 && r.action == false)
+            .unwrap();
+
+        // Accept rule should be stronger than reject rule for good prices
+        assert!(
+            buyer.price_acceptance_rules[accept_rule_idx].strength
+                > buyer.price_acceptance_rules[reject_rule_idx].strength,
+            "Buyer should learn to accept prices below p_out"
+        );
+    }
+
+    #[test]
+    fn test_seller_tracks_price_rule_usage() {
+        let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
+
+        // Choose price multiple times
+        let (price1, idx1) = seller.choose_price();
+        let (price2, idx2) = seller.choose_price();
+
+        // Record outcomes: first accepted, second rejected
+        seller.record_price_offer(idx1, true, price1);
+        seller.record_price_offer(idx2, false, price2);
+
+        // Check that usage was tracked
+        let (times1, revenue1) = seller.price_rule_usage[idx1];
+        assert_eq!(times1, 1);
+        assert_eq!(revenue1, price1);
+
+        let (times2, revenue2) = seller.price_rule_usage[idx2];
+        assert_eq!(times2, 1);
+        assert_eq!(revenue2, 0); // Rejected, no revenue
+    }
+
+    #[test]
+    fn test_seller_learning_differentiates_by_performance() {
+        let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
+
+        // Manually set up usage: high price (15) used and accepted, low price (5) used and rejected
+        let high_price_idx = 15;
+        let low_price_idx = 5;
+
+        seller.record_price_offer(high_price_idx, true, 15);
+        seller.record_price_offer(low_price_idx, false, 5);
+
+        let strength_before_high = seller.price_rules[high_price_idx].strength;
+        let strength_before_low = seller.price_rules[low_price_idx].strength;
+
+        // Update strengths
+        seller.update_strengths(0.05);
+
+        let strength_after_high = seller.price_rules[high_price_idx].strength;
+        let strength_after_low = seller.price_rules[low_price_idx].strength;
+
+        // Both should weaken from initial 1.0, but high price should weaken less
+        // (converging toward their actual rewards: 0.75 for high, 0.0 for low)
+        assert!(
+            strength_after_low < strength_before_low,
+            "Low price rule should weaken toward 0"
+        );
+
+        assert!(
+            strength_after_high > strength_after_low,
+            "High price rule should be stronger than low price rule after update"
+        );
+
+        // High price should be closer to its reward (0.75)
+        let expected_high = 0.95 * 1.0 + 0.05 * (15.0 / 20.0);
+        assert!(
+            (strength_after_high - expected_high).abs() < 0.001,
+            "High price strength should converge toward 0.75"
+        );
+    }
+
+    #[test]
+    fn test_seller_resets_usage_tracking() {
+        let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
+
+        // Use some rules
+        let (price, idx) = seller.choose_price();
+        seller.record_price_offer(idx, true, price);
+
+        // Verify usage was tracked
+        let (times, _) = seller.price_rule_usage[idx];
+        assert_eq!(times, 1);
+
+        // Reset for new day
+        seller.reset_daily_state();
+
+        // Verify usage was reset
+        for (times, revenue) in &seller.price_rule_usage {
+            assert_eq!(*times, 0);
+            assert_eq!(*revenue, 0);
+        }
+    }
+
+    #[test]
+    fn test_seller_convergence_to_profitable_price() {
+        let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
+
+        // Simulate many days where price 12 is always accepted, others rejected
+        for _ in 0..100 {
+            seller.reset_daily_state();
+
+            // Simulate 10 offers per day
+            for _ in 0..10 {
+                let (price, idx) = seller.choose_price();
+                let accepted = price == 12;
+                seller.record_price_offer(idx, accepted, price);
+            }
+
+            seller.update_strengths(0.05);
+        }
+
+        // Rule for price 12 should be strongest
+        let price_12_strength = seller.price_rules[12].strength;
+        let mut is_strongest = true;
+        for (idx, rule) in seller.price_rules.iter().enumerate() {
+            if idx != 12 && rule.strength > price_12_strength {
+                is_strongest = false;
+                break;
+            }
+        }
+
+        assert!(
+            is_strongest,
+            "Price 12 rule should be strongest after consistent acceptance"
+        );
+    }
+}
