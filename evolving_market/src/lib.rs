@@ -47,6 +47,32 @@ pub enum MarketEvent {
     },
 }
 
+/// Buyer type based on valuation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuyerType {
+    Low,    // p_out = 12
+    Medium, // p_out = 15
+    High,   // p_out = 18
+}
+
+impl BuyerType {
+    pub fn valuation(&self) -> usize {
+        match self {
+            BuyerType::Low => 12,
+            BuyerType::Medium => 15,
+            BuyerType::High => 18,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            BuyerType::Low => "Low",
+            BuyerType::Medium => "Medium",
+            BuyerType::High => "High",
+        }
+    }
+}
+
 /// Statistics tracked by agents
 #[derive(Debug, Clone)]
 pub struct MarketStats {
@@ -62,13 +88,15 @@ pub struct MarketStats {
     pub transactions_rejected: usize,
     // For buyers: which sellers visited
     pub sellers_visited: Vec<usize>,
+    // For buyers: buyer type
+    pub buyer_type: Option<String>,
     // For sellers: revenue and stock
     pub revenue: Option<usize>,
     pub stock_remaining: Option<usize>,
 }
 
 impl MarketStats {
-    pub fn new_buyer(day: usize, buyer_id: usize) -> Self {
+    pub fn new_buyer(day: usize, buyer_id: usize, buyer_type: BuyerType) -> Self {
         MarketStats {
             day,
             agent_type: "Buyer".to_string(),
@@ -79,6 +107,7 @@ impl MarketStats {
             transactions_denied: 0,
             transactions_rejected: 0,
             sellers_visited: Vec::new(),
+            buyer_type: Some(buyer_type.name().to_string()),
             revenue: None,
             stock_remaining: None,
         }
@@ -95,6 +124,7 @@ impl MarketStats {
             transactions_denied: 0,
             transactions_rejected: 0,
             sellers_visited: Vec::new(),
+            buyer_type: None,
             revenue: Some(0),
             stock_remaining: None,
         }
