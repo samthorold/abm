@@ -228,8 +228,9 @@ pub struct SellerAgent {
     pub id: usize,
     pub p_in: usize, // Purchase price for supply
 
-    // Classifier systems (minimal: just pricing)
+    // Classifier systems
     price_rules: Vec<Rule<(), usize>>, // Unconditional pricing rules, action = price
+    beta_rules: Vec<Rule<(), i32>>, // Queue handling parameter: -25 to +25 in steps of 5
 
     // Stock and revenue tracking (pub for coordinator access)
     pub stock: usize,
@@ -239,9 +240,11 @@ pub struct SellerAgent {
     // Daily state
     current_day: usize,
     queue: Vec<usize>, // Buyer IDs in queue
+    pub beta: i32, // Current queue handling parameter
 
-    // Track rule usage for learning (rule_idx -> (times_used, total_revenue))
-    price_rule_usage: Vec<(usize, usize)>, // parallel to price_rules
+    // Track rule usage for learning
+    price_rule_usage: Vec<(usize, usize)>, // (times_used, total_revenue) parallel to price_rules
+    active_beta_rule: Option<usize>, // Which beta rule is being used today
 
     // RNG
     rng: rand::rngs::StdRng,
@@ -264,16 +267,25 @@ impl SellerAgent {
 
         let n_rules = price_rules.len();
 
+        // Initialize beta rules: -25 to +25 in steps of 5
+        let beta_rules: Vec<_> = (-25..=25)
+            .step_by(5)
+            .map(|beta| Rule::new((), beta))
+            .collect();
+
         SellerAgent {
             id,
             p_in,
             price_rules,
+            beta_rules,
             stock: initial_stock,
             initial_stock,
             gross_revenue: 0,
             current_day: 0,
             queue: Vec::new(),
+            beta: 0, // Start with neutral queue handling
             price_rule_usage: vec![(0, 0); n_rules],
+            active_beta_rule: None,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
         }
     }
@@ -296,6 +308,13 @@ impl SellerAgent {
         }
     }
 
+    /// Choose beta parameter for queue handling (pub for coordinator access)
+    pub fn choose_beta(&mut self) {
+        let idx = stochastic_auction(&self.beta_rules, 0.1, 0.025, &mut self.rng);
+        self.beta = self.beta_rules[idx].action;
+        self.active_beta_rule = Some(idx);
+    }
+
     /// Update pricing rule strengths based on revenue (pub for main loop)
     pub fn update_strengths(&mut self, learning_rate: f64) {
         let max_price = self.price_rules.len() - 1;
@@ -316,6 +335,19 @@ impl SellerAgent {
 
             rule.strength = update_strength(rule.strength, reward, learning_rate);
         }
+
+        // Update beta rule based on gross revenue
+        if let Some(beta_idx) = self.active_beta_rule {
+            let max_possible_revenue = max_price * self.initial_stock;
+            let reward = if max_possible_revenue > 0 {
+                self.gross_revenue as f64 / max_possible_revenue as f64
+            } else {
+                0.0
+            };
+
+            self.beta_rules[beta_idx].strength =
+                update_strength(self.beta_rules[beta_idx].strength, reward, learning_rate);
+        }
     }
 
     /// Reset for new day (pub for main loop)
@@ -323,6 +355,8 @@ impl SellerAgent {
         self.stock = self.initial_stock;
         self.gross_revenue = 0;
         self.queue.clear();
+        self.beta = 0; // Will be chosen again
+        self.active_beta_rule = None;
         // Reset usage tracking for new day
         for usage in &mut self.price_rule_usage {
             *usage = (0, 0);

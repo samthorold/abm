@@ -1,5 +1,6 @@
 use crate::*;
 use crate::agents::{BuyerAgent, SellerAgent};
+use rand::Rng;
 use std::collections::HashMap;
 
 /// Market Coordinator manages shared state and orchestrates transactions
@@ -19,10 +20,15 @@ pub struct MarketCoordinator {
 
     /// Buyer choices for current session
     buyer_choices: HashMap<usize, usize>, // buyer_id -> seller_id
+
+    /// RNG for loyalty-weighted selection
+    rng: rand::rngs::StdRng,
 }
 
 impl MarketCoordinator {
     pub fn new(n_buyers: usize, n_sellers: usize, alpha: f64) -> Self {
+        use rand::SeedableRng;
+
         // Initialize loyalty matrix with zeros
         let loyalty = vec![vec![0.0; n_sellers]; n_buyers];
 
@@ -33,6 +39,7 @@ impl MarketCoordinator {
             alpha,
             queues: HashMap::new(),
             buyer_choices: HashMap::new(),
+            rng: rand::rngs::StdRng::seed_from_u64(123), // Fixed seed for reproducibility
         }
     }
 
@@ -42,7 +49,6 @@ impl MarketCoordinator {
     }
 
     /// Form queues based on buyer choices
-    /// For minimal model: simple FIFO queues
     pub fn form_queues(&mut self) {
         self.queues.clear();
 
@@ -52,6 +58,57 @@ impl MarketCoordinator {
                 .or_insert_with(Vec::new)
                 .push(*buyer_id);
         }
+    }
+
+    /// Select next customer from queue using loyalty-weighted probabilities
+    /// Formula: P(buyer) ∝ (1 + L_ij)^β
+    fn select_next_customer(
+        &mut self,
+        queue: &[usize],
+        seller_id: usize,
+        beta: i32,
+    ) -> Option<usize> {
+        if queue.is_empty() {
+            return None;
+        }
+
+        if queue.len() == 1 {
+            return Some(queue[0]);
+        }
+
+        // Compute weights for each buyer in queue
+        let weights: Vec<f64> = queue
+            .iter()
+            .map(|&buyer_id| {
+                let loyalty = self.loyalty[buyer_id][seller_id];
+                let base = 1.0 + loyalty;
+                if beta == 0 {
+                    1.0 // Equal weighting when β = 0
+                } else {
+                    base.powi(beta)
+                }
+            })
+            .collect();
+
+        let total_weight: f64 = weights.iter().sum();
+
+        if total_weight == 0.0 {
+            // Fallback to random selection
+            let idx = self.rng.random::<f64>() * queue.len() as f64;
+            return Some(queue[idx as usize]);
+        }
+
+        // Random selection with loyalty-weighted probabilities
+        let mut r = self.rng.random::<f64>() * total_weight;
+        for (idx, &weight) in weights.iter().enumerate() {
+            r -= weight;
+            if r <= 0.0 {
+                return Some(queue[idx]);
+            }
+        }
+
+        // Fallback (shouldn't happen)
+        Some(queue[queue.len() - 1])
     }
 
     /// Process queues: sellers make offers, buyers respond
@@ -67,23 +124,18 @@ impl MarketCoordinator {
 
         for seller in sellers {
             let seller_id = seller.id;
-            let queue = self.queues.get(&seller_id).cloned().unwrap_or_default();
+            let mut remaining_queue = self.queues.get(&seller_id).cloned().unwrap_or_default();
 
-            // Process each buyer in queue
-            for buyer_id in queue {
-                // Check if seller has stock
-                if seller.stock == 0 {
-                    // Denied service
-                    events.push(MarketEvent::Transaction {
-                        day,
-                        session,
-                        buyer_id,
-                        seller_id,
-                        price: None,
-                        accepted: false,
-                    });
-                    continue;
-                }
+            // Process queue using loyalty-weighted selection
+            while !remaining_queue.is_empty() && seller.stock > 0 {
+                // Select next buyer based on loyalty and beta
+                let buyer_id = match self.select_next_customer(&remaining_queue, seller_id, seller.beta) {
+                    Some(id) => id,
+                    None => break,
+                };
+
+                // Remove selected buyer from queue
+                remaining_queue.retain(|&id| id != buyer_id);
 
                 // Seller chooses price
                 let (price, rule_idx) = seller.choose_price();
@@ -121,6 +173,18 @@ impl MarketCoordinator {
                     });
                 }
             }
+
+            // Handle buyers left in queue (denied service due to stock out)
+            for buyer_id in remaining_queue {
+                events.push(MarketEvent::Transaction {
+                    day,
+                    session,
+                    buyer_id,
+                    seller_id,
+                    price: None,
+                    accepted: false,
+                });
+            }
         }
 
         events
@@ -157,3 +221,112 @@ impl MarketCoordinator {
         self.queues.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_loyalty_weighted_selection_favors_loyal_with_positive_beta() {
+        let mut coordinator = MarketCoordinator::new(3, 1, 0.25);
+
+        // Set up loyalty values
+        coordinator.loyalty[0][0] = 0.9; // Highly loyal
+        coordinator.loyalty[1][0] = 0.5; // Medium loyal
+        coordinator.loyalty[2][0] = 0.1; // Not loyal
+
+        let queue = vec![0, 1, 2];
+        let beta = 10; // Positive beta favors loyal customers
+
+        // Run selection many times and count
+        let mut selections = vec![0, 0, 0];
+        for _ in 0..1000 {
+            if let Some(selected) = coordinator.select_next_customer(&queue, 0, beta) {
+                let idx = queue.iter().position(|&b| b == selected).unwrap();
+                selections[idx] += 1;
+            }
+        }
+
+        // Highly loyal buyer should be selected much more often
+        assert!(
+            selections[0] > selections[1],
+            "Highly loyal buyer should be selected more than medium loyal"
+        );
+        assert!(
+            selections[1] > selections[2],
+            "Medium loyal should be selected more than non-loyal"
+        );
+        assert!(
+            selections[0] > 600,
+            "Highly loyal buyer should be selected >60% of the time with β=10"
+        );
+    }
+
+    #[test]
+    fn test_loyalty_weighted_selection_neutral_with_zero_beta() {
+        let mut coordinator = MarketCoordinator::new(3, 1, 0.25);
+
+        // Set up different loyalty values
+        coordinator.loyalty[0][0] = 0.9;
+        coordinator.loyalty[1][0] = 0.5;
+        coordinator.loyalty[2][0] = 0.1;
+
+        let queue = vec![0, 1, 2];
+        let beta = 0; // Neutral - all equal
+
+        // Run selection many times
+        let mut selections = vec![0, 0, 0];
+        for _ in 0..900 {
+            if let Some(selected) = coordinator.select_next_customer(&queue, 0, beta) {
+                let idx = queue.iter().position(|&b| b == selected).unwrap();
+                selections[idx] += 1;
+            }
+        }
+
+        // All should be roughly equal (within 20% of expected 300)
+        for count in &selections {
+            assert!(
+                *count > 240 && *count < 360,
+                "With β=0, selections should be roughly equal: got {:?}",
+                selections
+            );
+        }
+    }
+
+    #[test]
+    fn test_loyalty_weighted_selection_disfavors_loyal_with_negative_beta() {
+        let mut coordinator = MarketCoordinator::new(3, 1, 0.25);
+
+        // Set up loyalty values
+        coordinator.loyalty[0][0] = 0.9; // Highly loyal
+        coordinator.loyalty[1][0] = 0.5; // Medium loyal
+        coordinator.loyalty[2][0] = 0.1; // Not loyal
+
+        let queue = vec![0, 1, 2];
+        let beta = -10; // Negative beta favors NEW customers
+
+        // Run selection many times
+        let mut selections = vec![0, 0, 0];
+        for _ in 0..1000 {
+            if let Some(selected) = coordinator.select_next_customer(&queue, 0, beta) {
+                let idx = queue.iter().position(|&b| b == selected).unwrap();
+                selections[idx] += 1;
+            }
+        }
+
+        // Non-loyal buyer should be selected much more often
+        assert!(
+            selections[2] > selections[1],
+            "Non-loyal buyer should be selected more than medium loyal"
+        );
+        assert!(
+            selections[1] > selections[0],
+            "Medium loyal should be selected more than highly loyal"
+        );
+        assert!(
+            selections[2] > 600,
+            "Non-loyal buyer should be selected >60% of the time with β=-10"
+        );
+    }
+}
+

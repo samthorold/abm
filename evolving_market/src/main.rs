@@ -82,10 +82,15 @@ fn main() {
             coordinator.record_buyer_choice(buyer.id, seller_id);
         }
 
-        // Phase 2: Form queues
+        // Phase 2: Sellers choose beta parameter for queue handling
+        for seller in &mut sellers {
+            seller.choose_beta();
+        }
+
+        // Phase 3: Form queues
         coordinator.form_queues();
 
-        // Phase 3: Process queues (sellers offer prices, buyers respond)
+        // Phase 4: Process queues (sellers offer prices, buyers respond)
         let _transaction_events = coordinator.process_queues(
             &mut sellers,
             &mut buyers,
@@ -93,7 +98,7 @@ fn main() {
             Session::Morning,
         );
 
-        // Phase 4: Update learning (both buyers and sellers)
+        // Phase 5: Update learning (both buyers and sellers)
         for buyer in &mut buyers {
             buyer.update_strengths(LEARNING_RATE);
         }
@@ -101,7 +106,7 @@ fn main() {
             seller.update_strengths(LEARNING_RATE);
         }
 
-        // Phase 5: Update loyalty
+        // Phase 6: Update loyalty
         coordinator.update_loyalty();
 
         // Collect statistics
@@ -145,13 +150,17 @@ fn main() {
 
         // Print progress every 100 days
         if (day + 1) % 100 == 0 {
+            // Calculate average beta across sellers
+            let avg_beta = sellers.iter().map(|s| s.beta as f64).sum::<f64>() / sellers.len() as f64;
+
             println!(
-                "Day {}: avg_price={:.2}, transactions={}, denied={}, loyalty={:.3}",
+                "Day {}: avg_price={:.2}, transactions={}, denied={}, loyalty={:.3}, avg_beta={:.1}",
                 day + 1,
                 stats.avg_price,
                 stats.n_transactions,
                 stats.n_denied,
-                stats.avg_loyalty_concentration
+                stats.avg_loyalty_concentration,
+                avg_beta
             );
         }
     }
