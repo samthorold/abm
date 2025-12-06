@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["des", "simple_queue", "evolution_coop"]
+members = ["des", "simple_queue", "evolution_coop", "evolving_market"]

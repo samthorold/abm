@@ -1,0 +1,10 @@
+[package]
+name = "evolving_market"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+des = { path = "../des" }
+rand = "0.9"
+rand_distr = "0.5"
+csv = "1.3"
