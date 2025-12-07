@@ -17,6 +17,44 @@ cargo run --release -p evolution_coop --bin evolutionary_takeover  # Finding C: 
 cargo test
 ```
 
+## Development Setup
+
+### Pre-commit Hooks
+
+This project uses pre-commit hooks to ensure code quality before commits. The hooks mirror the checks run in CI (GitHub Actions):
+
+1. **Install pre-commit** (requires Python):
+   ```bash
+   pip install pre-commit
+   ```
+
+2. **Install the git hooks**:
+   ```bash
+   pre-commit install
+   ```
+
+3. **Run manually** (optional):
+   ```bash
+   # Run on all files
+   pre-commit run --all-files
+
+   # Run on staged files only
+   pre-commit run
+   ```
+
+4. **Skip hooks** (when needed):
+   ```bash
+   git commit --no-verify
+   ```
+
+**What the hooks check:**
+- `cargo fmt --all -- --check` - Code formatting
+- `cargo clippy --all-targets --all-features -- -D warnings` - Lints
+- `cargo test --all-features --workspace` - Test suite
+- `cargo build --all-features --workspace` - Build check
+
+**Note**: The test and build hooks may take a few seconds. For quick commits during iteration, you can skip them with `--no-verify` and rely on CI to catch issues.
+
 ## Implemented Simulations
 
 ### The Evolution of Cooperation (Axelrod & Hamilton, 1981) ✅
