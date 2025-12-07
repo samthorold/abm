@@ -3,8 +3,18 @@ name: Rust Checks
 on:
   pull_request:
     branches: [ main ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust-checks.yml'
   push:
     branches: [ main ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust-checks.yml'
 
 env:
   CARGO_TERM_COLOR: always
