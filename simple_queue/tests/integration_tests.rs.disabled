@@ -24,7 +24,11 @@ fn given_deterministic_consumer_process_when_simulation_runs_then_predictable_ev
     let response = consumer_process.act(0, &Event::Start);
 
     // THEN: Two events scheduled (request + expiry)
-    assert_eq!(response.events.len(), 2, "Should schedule request and expiry");
+    assert_eq!(
+        response.events.len(),
+        2,
+        "Should schedule request and expiry"
+    );
 
     // Extract request and expiry times
     let mut request_event = None;
@@ -52,19 +56,26 @@ fn given_deterministic_consumer_process_when_simulation_runs_then_predictable_ev
 
     // THEN: Expiry scheduled after request
     let (expiry_t, expiry_req_t) = expiry_event.expect("Should have expiry event");
-    assert_eq!(expiry_req_t, request_t, "Expiry should reference request time");
+    assert_eq!(
+        expiry_req_t, request_t,
+        "Expiry should reference request time"
+    );
     assert!(expiry_t > request_t, "Expiry should be after request");
 
     // Expected: ~10 time units between request and expiry
     let wait_duration = expiry_t - request_t;
-    assert!(wait_duration >= 5 && wait_duration <= 15,
-            "Wait duration should be ~10 units, got {}", wait_duration);
+    assert!(
+        wait_duration >= 5 && wait_duration <= 15,
+        "Wait duration should be ~10 units, got {}",
+        wait_duration
+    );
 }
 
 #[test]
 fn given_consumer_and_resource_when_acquisition_occurs_then_release_scheduled() {
     // GIVEN: Consumer process and resource
-    let mut consumer_process = ConsumerProcess::new_with_seed(0, 42, 1.0/50.0, (30.0, 1.0), (10.0, 1.0));
+    let mut consumer_process =
+        ConsumerProcess::new_with_seed(0, 42, 1.0 / 50.0, (30.0, 1.0), (10.0, 1.0));
     let mut resource = Resource::new(0, 1);
 
     // WHEN: Consumer requests resource (at t=10)
@@ -90,8 +101,11 @@ fn given_consumer_and_resource_when_acquisition_occurs_then_release_scheduled() 
 
             // Expected: release ~30 time units after acquisition (service time)
             let service_duration = *release_t - 10;
-            assert!(service_duration >= 25 && service_duration <= 35,
-                    "Service duration should be ~30 units, got {}", service_duration);
+            assert!(
+                service_duration >= 25 && service_duration <= 35,
+                "Service duration should be ~30 units, got {}",
+                service_duration
+            );
         }
         _ => panic!("Expected ResourceReleased event"),
     }
@@ -100,13 +114,18 @@ fn given_consumer_and_resource_when_acquisition_occurs_then_release_scheduled() 
 #[test]
 fn given_consumer_and_resource_when_request_triggers_new_consumer() {
     // GIVEN: Consumer process
-    let mut consumer_process = ConsumerProcess::new_with_seed(0, 42, 1.0/50.0, (30.0, 1.0), (10.0, 1.0));
+    let mut consumer_process =
+        ConsumerProcess::new_with_seed(0, 42, 1.0 / 50.0, (30.0, 1.0), (10.0, 1.0));
 
     // WHEN: First consumer makes a request (triggering arrival of next consumer)
     let response = consumer_process.act(50, &Event::ResourceRequested(0, 0));
 
     // THEN: New consumer scheduled
-    assert_eq!(response.events.len(), 2, "Should schedule next consumer request + expiry");
+    assert_eq!(
+        response.events.len(),
+        2,
+        "Should schedule next consumer request + expiry"
+    );
 
     // Verify next consumer has incremented ID
     for (_, event) in &response.events {
@@ -128,7 +147,8 @@ fn scenario_full_consumer_lifecycle() {
     // Demonstrates the agent interaction protocol
 
     // GIVEN: One consumer process and one resource
-    let mut consumer_process = ConsumerProcess::new_with_seed(0, 123, 1.0/100.0, (50.0, 5.0), (20.0, 2.0));
+    let mut consumer_process =
+        ConsumerProcess::new_with_seed(0, 123, 1.0 / 100.0, (50.0, 5.0), (20.0, 2.0));
     let mut resource = Resource::new(0, 1);
 
     let mut time = 0usize;
@@ -184,8 +204,8 @@ fn scenario_resource_contention_and_queueing() {
     // Tests behavior when multiple consumers compete for limited resource
 
     // GIVEN: Two consumer processes with different seeds, one resource (capacity 1)
-    let mut cp1 = ConsumerProcess::new_with_seed(0, 111, 1.0/100.0, (50.0, 5.0), (20.0, 2.0));
-    let mut cp2 = ConsumerProcess::new_with_seed(0, 222, 1.0/100.0, (50.0, 5.0), (20.0, 2.0));
+    let mut cp1 = ConsumerProcess::new_with_seed(0, 111, 1.0 / 100.0, (50.0, 5.0), (20.0, 2.0));
+    let mut cp2 = ConsumerProcess::new_with_seed(0, 222, 1.0 / 100.0, (50.0, 5.0), (20.0, 2.0));
     let mut resource = Resource::new(0, 1);
 
     // WHEN: Both start simultaneously
@@ -215,7 +235,11 @@ fn scenario_resource_contention_and_queueing() {
     let queue_response = resource.act(12, &requests[1].1);
 
     // THEN: Second consumer queued (no immediate acquisition)
-    assert_eq!(queue_response.events.len(), 0, "Should be queued, not acquired");
+    assert_eq!(
+        queue_response.events.len(),
+        0,
+        "Should be queued, not acquired"
+    );
     assert_eq!(resource.consumer_queue.len(), 1, "One consumer in queue");
     assert_eq!(resource.consumer_count, 1, "Still only one active");
 }
@@ -225,12 +249,16 @@ mod test_helpers {
     use super::*;
 
     // Helper to extract specific event types from response
-    pub fn extract_events_of_type<F>(response: &des::Response<Event, Stats>, predicate: F) -> Vec<(usize, Event)>
+    pub fn extract_events_of_type<F>(
+        response: &des::Response<Event, Stats>,
+        predicate: F,
+    ) -> Vec<(usize, Event)>
     where
         F: Fn(&Event) -> bool,
         Event: Clone,
     {
-        response.events
+        response
+            .events
             .iter()
             .filter(|(_, e)| predicate(e))
             .cloned()
@@ -243,9 +271,6 @@ mod test_helpers {
         F: Fn(&Event) -> bool,
         Event: Clone,
     {
-        events
-            .iter()
-            .find(|(_, e)| predicate(e))
-            .cloned()
+        events.iter().find(|(_, e)| predicate(e)).cloned()
     }
 }

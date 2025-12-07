@@ -18,20 +18,11 @@ pub enum Session {
 #[derive(Debug, Clone)]
 pub enum MarketEvent {
     /// Start of a trading session
-    SessionStart {
-        day: usize,
-        session: Session,
-    },
+    SessionStart { day: usize, session: Session },
     /// Buyers choose which seller to visit
-    BuyersChooseSellers {
-        day: usize,
-        session: Session,
-    },
+    BuyersChooseSellers { day: usize, session: Session },
     /// Sellers process their queues and make price offers
-    ProcessQueues {
-        day: usize,
-        session: Session,
-    },
+    ProcessQueues { day: usize, session: Session },
     /// A transaction occurs (or fails)
     Transaction {
         day: usize,
@@ -42,9 +33,7 @@ pub enum MarketEvent {
         accepted: bool,
     },
     /// End of trading day - trigger learning updates
-    DayEnd {
-        day: usize,
-    },
+    DayEnd { day: usize },
 }
 
 /// Buyer type based on valuation
@@ -133,7 +122,6 @@ impl MarketStats {
 
 /// Classifier system infrastructure for reinforcement learning
 /// Based on Kirman & Vriend (2001) ACE model
-
 /// A rule in the classifier system
 /// Condition can be any type (or unit type () for unconditional rules)
 /// Action is the decision this rule recommends
@@ -325,7 +313,7 @@ mod tests {
         ];
 
         // Run auction many times, rule 1 should win most often
-        let mut counts = vec![0; 3];
+        let mut counts = [0, 0, 0];
         for _ in 0..1000 {
             let idx = stochastic_auction(&rules, 0.1, 0.025, &mut rng);
             counts[idx] += 1;

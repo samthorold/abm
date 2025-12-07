@@ -77,7 +77,10 @@ fn main() {
         println!("   Avg Score/Round: {:.2}", avg_score);
         println!("   Rounds Played: {}", ps.rounds_played);
         println!("   Cooperation Rate: {:.1}%", coop_rate);
-        println!("   Cooperations: {}, Defections: {}\n", ps.cooperations, ps.defections);
+        println!(
+            "   Cooperations: {}, Defections: {}\n",
+            ps.cooperations, ps.defections
+        );
     }
 
     println!("\nRobustness Analysis:");

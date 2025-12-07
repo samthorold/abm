@@ -1,5 +1,5 @@
-use crate::*;
 use crate::agents::{BuyerAgent, SellerAgent};
+use crate::*;
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -53,10 +53,7 @@ impl MarketCoordinator {
         self.queues.clear();
 
         for (buyer_id, seller_id) in &self.buyer_choices {
-            self.queues
-                .entry(*seller_id)
-                .or_insert_with(Vec::new)
-                .push(*buyer_id);
+            self.queues.entry(*seller_id).or_default().push(*buyer_id);
         }
     }
 
@@ -129,10 +126,11 @@ impl MarketCoordinator {
             // Process queue using loyalty-weighted selection
             while !remaining_queue.is_empty() && seller.stock > 0 {
                 // Select next buyer based on loyalty and beta
-                let buyer_id = match self.select_next_customer(&remaining_queue, seller_id, seller.beta) {
-                    Some(id) => id,
-                    None => break,
-                };
+                let buyer_id =
+                    match self.select_next_customer(&remaining_queue, seller_id, seller.beta) {
+                        Some(id) => id,
+                        None => break,
+                    };
 
                 // Remove selected buyer from queue
                 remaining_queue.retain(|&id| id != buyer_id);
@@ -243,7 +241,7 @@ mod tests {
         let beta = 10; // Positive beta favors loyal customers
 
         // Run selection many times and count
-        let mut selections = vec![0, 0, 0];
+        let mut selections = [0, 0, 0];
         for _ in 0..1000 {
             if let Some(selected) = coordinator.select_next_customer(&queue, 0, beta) {
                 let idx = queue.iter().position(|&b| b == selected).unwrap();
@@ -279,7 +277,7 @@ mod tests {
         let beta = 0; // Neutral - all equal
 
         // Run selection many times
-        let mut selections = vec![0, 0, 0];
+        let mut selections = [0, 0, 0];
         for _ in 0..900 {
             if let Some(selected) = coordinator.select_next_customer(&queue, 0, beta) {
                 let idx = queue.iter().position(|&b| b == selected).unwrap();
@@ -310,7 +308,7 @@ mod tests {
         let beta = -10; // Negative beta favors NEW customers
 
         // Run selection many times
-        let mut selections = vec![0, 0, 0];
+        let mut selections = [0, 0, 0];
         for _ in 0..1000 {
             if let Some(selected) = coordinator.select_next_customer(&queue, 0, beta) {
                 let idx = queue.iter().position(|&b| b == selected).unwrap();
@@ -333,4 +331,3 @@ mod tests {
         );
     }
 }
-

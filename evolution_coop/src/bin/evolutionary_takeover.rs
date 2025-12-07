@@ -23,7 +23,11 @@ fn main() {
     println!("Parameters:");
     println!("  Population size: {}", total_population);
     println!("  Initial TFT: {} ({}%)", tft_count, tft_percentage * 100.0);
-    println!("  Initial Defectors: {} ({}%)", defector_count, (1.0 - tft_percentage) * 100.0);
+    println!(
+        "  Initial Defectors: {} ({}%)",
+        defector_count,
+        (1.0 - tft_percentage) * 100.0
+    );
     println!("  Kinship groups: {}", num_kinship_groups);
     println!("  Kinship preference: {}%", kinship_preference * 100.0);
     println!("  Mutation rate: {}%", mutation_rate * 100.0);
@@ -48,7 +52,10 @@ fn main() {
 
     println!("Creating Generation 1 population:");
     println!("  {} TIT FOR TAT agents in kinship group 0", tft_count);
-    println!("  {} ALWAYS DEFECT agents across {} groups\n", defector_count, num_kinship_groups);
+    println!(
+        "  {} ALWAYS DEFECT agents across {} groups\n",
+        defector_count, num_kinship_groups
+    );
 
     // Create TIT FOR TAT agents (all in kinship group 0)
     for _ in 0..tft_count {
@@ -88,8 +95,10 @@ fn main() {
     println!("Running {} generations...", max_generations);
     println!("=================================================================\n");
 
-    println!("{:<4} | {:<6} | {:<8} | {:<8} | {:<10} | {:<10}",
-             "Gen", "TFT%", "Avg TFT", "Avg Def", "TFT Fit", "Def Fit");
+    println!(
+        "{:<4} | {:<6} | {:<8} | {:<8} | {:<10} | {:<10}",
+        "Gen", "TFT%", "Avg TFT", "Avg Def", "TFT Fit", "Def Fit"
+    );
     println!("{}", "-".repeat(70));
 
     // Run simulation
@@ -99,13 +108,14 @@ fn main() {
     let stats = event_loop.stats();
 
     // Organize stats by generation
-    let mut gen_stats: std::collections::HashMap<usize, Vec<AgentStats>> = std::collections::HashMap::new();
+    let mut gen_stats: std::collections::HashMap<usize, Vec<AgentStats>> =
+        std::collections::HashMap::new();
 
     for stat in stats {
         if let EvolutionaryStats::Agent(agent_stat) = stat {
             gen_stats
                 .entry(agent_stat.generation)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(agent_stat);
         }
     }
@@ -113,16 +123,28 @@ fn main() {
     // Print per-generation stats
     for gen in 1..=max_generations {
         if let Some(agents) = gen_stats.get(&gen) {
-            let tft_count = agents.iter().filter(|a| a.strategy_name == "TitForTat").count();
-            let def_count = agents.iter().filter(|a| a.strategy_name == "AlwaysDefect").count();
+            let tft_count = agents
+                .iter()
+                .filter(|a| a.strategy_name == "TitForTat")
+                .count();
+            let def_count = agents
+                .iter()
+                .filter(|a| a.strategy_name == "AlwaysDefect")
+                .count();
             let tft_pct = if !agents.is_empty() {
                 tft_count as f64 / agents.len() as f64 * 100.0
             } else {
                 0.0
             };
 
-            let tft_agents: Vec<&AgentStats> = agents.iter().filter(|a| a.strategy_name == "TitForTat").collect();
-            let def_agents: Vec<&AgentStats> = agents.iter().filter(|a| a.strategy_name == "AlwaysDefect").collect();
+            let tft_agents: Vec<&AgentStats> = agents
+                .iter()
+                .filter(|a| a.strategy_name == "TitForTat")
+                .collect();
+            let def_agents: Vec<&AgentStats> = agents
+                .iter()
+                .filter(|a| a.strategy_name == "AlwaysDefect")
+                .collect();
 
             let avg_tft = if !tft_agents.is_empty() {
                 tft_agents.iter().map(|a| a.fitness).sum::<f64>() / tft_agents.len() as f64
@@ -136,8 +158,10 @@ fn main() {
                 0.0
             };
 
-            println!("{:<4} | {:<6.1} | {:<8.2} | {:<8.2} | {:<10} | {:<10}",
-                     gen, tft_pct, avg_tft, avg_def, tft_count, def_count);
+            println!(
+                "{:<4} | {:<6.1} | {:<8.2} | {:<8.2} | {:<10} | {:<10}",
+                gen, tft_pct, avg_tft, avg_def, tft_count, def_count
+            );
         }
     }
 
@@ -147,10 +171,7 @@ fn main() {
     println!("{}", "=".repeat(70));
 
     // Get final generation agents only
-    let all_agents: Vec<AgentStats> = gen_stats
-        .get(&max_generations)
-        .map(|v| v.clone())
-        .unwrap_or_default();
+    let all_agents: Vec<AgentStats> = gen_stats.get(&max_generations).cloned().unwrap_or_default();
 
     let tft_agents: Vec<&AgentStats> = all_agents
         .iter()
@@ -185,13 +206,27 @@ fn main() {
 
     println!("\nPopulation Composition:");
     println!("  Total agents: {}", all_agents.len());
-    println!("  TIT FOR TAT: {} ({:.1}%)", tft_agents.len(), tft_final_pct);
-    println!("  ALWAYS DEFECT: {} ({:.1}%)", defector_agents.len(), 100.0 - tft_final_pct);
+    println!(
+        "  TIT FOR TAT: {} ({:.1}%)",
+        tft_agents.len(),
+        tft_final_pct
+    );
+    println!(
+        "  ALWAYS DEFECT: {} ({:.1}%)",
+        defector_agents.len(),
+        100.0 - tft_final_pct
+    );
     println!("\nFitness Summary:");
     println!("  Avg TFT fitness: {:.2}", avg_tft_fitness);
     println!("  Avg Defector fitness: {:.2}", avg_def_fitness);
-    println!("  Fitness ratio (TFT/Defector): {:.2}",
-             if avg_def_fitness > 0.0 { avg_tft_fitness / avg_def_fitness } else { 0.0 });
+    println!(
+        "  Fitness ratio (TFT/Defector): {:.2}",
+        if avg_def_fitness > 0.0 {
+            avg_tft_fitness / avg_def_fitness
+        } else {
+            0.0
+        }
+    );
 
     println!("\n{}", "=".repeat(70));
     println!("Analysis: Initial Viability → Invasion Dynamics");
@@ -199,8 +234,14 @@ fn main() {
 
     if tft_final_pct > 50.0 {
         println!("\n✓ SUCCESS: Cooperation has invaded and taken over!");
-        println!("\n  Initial state: {}% TIT FOR TAT (rare cooperators)", tft_percentage * 100.0);
-        println!("  Final state: {:.1}% TIT FOR TAT (majority)", tft_final_pct);
+        println!(
+            "\n  Initial state: {}% TIT FOR TAT (rare cooperators)",
+            tft_percentage * 100.0
+        );
+        println!(
+            "  Final state: {:.1}% TIT FOR TAT (majority)",
+            tft_final_pct
+        );
         println!("\n  Invasion path:");
         println!("    1. Kinship (80% within-group) → TFT agents meet each other");
         println!("    2. Mutual cooperation → TFT agents achieve higher fitness");

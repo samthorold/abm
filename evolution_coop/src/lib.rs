@@ -89,10 +89,10 @@ pub enum Stats {
 
 pub fn calculate_payoff(my_choice: Choice, opponent_choice: Choice) -> i32 {
     match (my_choice, opponent_choice) {
-        (Choice::Cooperate, Choice::Cooperate) => 3,  // Reward
-        (Choice::Defect, Choice::Cooperate) => 5,      // Temptation
-        (Choice::Cooperate, Choice::Defect) => 0,      // Sucker
-        (Choice::Defect, Choice::Defect) => 1,         // Punishment
+        (Choice::Cooperate, Choice::Cooperate) => 3, // Reward
+        (Choice::Defect, Choice::Cooperate) => 5,    // Temptation
+        (Choice::Cooperate, Choice::Defect) => 0,    // Sucker
+        (Choice::Defect, Choice::Defect) => 1,       // Punishment
     }
 }
 
@@ -125,7 +125,7 @@ struct RoundState {
 }
 
 struct MatchState {
-    match_id: usize,
+    _match_id: usize,
     player_a_id: usize,
     player_b_id: usize,
     current_round: usize,
@@ -134,7 +134,7 @@ struct MatchState {
 
 pub struct TournamentCoordinator {
     num_rounds_per_match: usize,
-    num_players: usize,
+    _num_players: usize,
 
     // Match orchestration
     next_match_id: usize,
@@ -157,7 +157,7 @@ impl TournamentCoordinator {
 
         TournamentCoordinator {
             num_rounds_per_match,
-            num_players,
+            _num_players: num_players,
             next_match_id: 0,
             pending_matches,
             current_matches: HashMap::new(),
@@ -173,7 +173,7 @@ impl TournamentCoordinator {
             self.current_matches.insert(
                 match_id,
                 MatchState {
-                    match_id,
+                    _match_id: match_id,
                     player_a_id,
                     player_b_id,
                     current_round: 1,

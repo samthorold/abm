@@ -9,10 +9,14 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub enum KinshipEvent {
     // Start a generation of encounters
-    GenerationStart { generation: usize },
+    GenerationStart {
+        generation: usize,
+    },
 
     // Request encounter partner for an agent
-    EncounterRequest { agent_id: usize },
+    EncounterRequest {
+        agent_id: usize,
+    },
 
     // Two agents play iterated prisoner's dilemma
     PlayMatch {
@@ -56,10 +60,14 @@ pub enum KinshipEvent {
     },
 
     // Generation complete, trigger reproduction
-    GenerationComplete { generation: usize },
+    GenerationComplete {
+        generation: usize,
+    },
 
     // Reproduction event - collect fitness and create next generation
-    Reproduction { generation: usize },
+    Reproduction {
+        generation: usize,
+    },
 }
 
 // ============================================================================
@@ -116,7 +124,12 @@ pub struct EvolutionaryPlayer {
 }
 
 impl EvolutionaryPlayer {
-    pub fn new(id: usize, generation: usize, strategy: Box<dyn Strategy>, kinship_group: usize) -> Self {
+    pub fn new(
+        id: usize,
+        generation: usize,
+        strategy: Box<dyn Strategy>,
+        kinship_group: usize,
+    ) -> Self {
         EvolutionaryPlayer {
             id,
             generation,
@@ -163,7 +176,7 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for EvolutionaryPlayer {
             KinshipEvent::PlayMatch {
                 agent_a_id,
                 agent_b_id,
-                rounds,
+                rounds: _,
             } => {
                 // Only respond if this agent is involved
                 if *agent_a_id == self.id || *agent_b_id == self.id {
@@ -195,9 +208,9 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for EvolutionaryPlayer {
 
             KinshipEvent::PlayRound {
                 match_id,
-                agent_a_id,
-                agent_b_id,
-                round_num,
+                agent_a_id: _,
+                agent_b_id: _,
+                round_num: _,
             } => {
                 if Some(*match_id) == self.current_match_id {
                     let opponent_id = self.current_opponent_id.unwrap();
@@ -229,7 +242,7 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for EvolutionaryPlayer {
                 match_id,
                 round_num,
                 agent_a_id,
-                agent_b_id,
+                agent_b_id: _,
                 agent_a_choice,
                 agent_b_choice,
             } => {
@@ -249,7 +262,7 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for EvolutionaryPlayer {
                     // Store in history
                     self.opponent_histories
                         .entry(opponent_id)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(RoundOutcome {
                             round_number: *round_num,
                             my_choice,
@@ -262,8 +275,8 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for EvolutionaryPlayer {
 
             KinshipEvent::MatchComplete {
                 match_id,
-                agent_a_id,
-                agent_b_id,
+                agent_a_id: _,
+                agent_b_id: _,
                 agent_a_payoff: _,
                 agent_b_payoff: _,
             } => {
@@ -323,14 +336,14 @@ struct AgentData {
 pub struct PopulationCoordinator {
     // Population tracking
     agent_registry: HashMap<usize, AgentData>, // id -> agent data
-    agent_fitness: HashMap<usize, f64>, // Track fitness updates
+    agent_fitness: HashMap<usize, f64>,        // Track fitness updates
 
     // Simulation parameters
     population_size: usize,
     encounters_per_generation: usize,
     rounds_per_match: usize,
     kinship_preference: f64, // Probability of matching within kinship group
-    mutation_rate: f64, // Probability of strategy mutation
+    mutation_rate: f64,      // Probability of strategy mutation
 
     // Current state
     current_generation: usize,
@@ -404,7 +417,13 @@ impl PopulationCoordinator {
         // Use a minimum of 0.1 to avoid division by zero and give all agents some chance
         let total_fitness: f64 = agents
             .iter()
-            .map(|a| self.agent_fitness.get(&a.id).copied().unwrap_or(0.0).max(0.1))
+            .map(|a| {
+                self.agent_fitness
+                    .get(&a.id)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.1)
+            })
             .sum();
 
         // Create new population via roulette wheel selection
@@ -413,7 +432,12 @@ impl PopulationCoordinator {
             let mut selected = agents[0];
 
             for agent in &agents {
-                let agent_fitness = self.agent_fitness.get(&agent.id).copied().unwrap_or(0.0).max(0.1);
+                let agent_fitness = self
+                    .agent_fitness
+                    .get(&agent.id)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.1);
                 spin -= agent_fitness;
                 if spin <= 0.0 {
                     selected = agent;
@@ -548,17 +572,18 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for PopulationCoordinator {
 
                         // Emit round result
                         let round_num = match_state.current_round;
-                        let event: des::Response<KinshipEvent, EvolutionaryStats> = des::Response::event(
-                            current_t + 1,
-                            KinshipEvent::RoundResult {
-                                match_id: *match_id,
-                                round_num,
-                                agent_a_id: match_state.agent_a_id,
-                                agent_b_id: match_state.agent_b_id,
-                                agent_a_choice: a_choice,
-                                agent_b_choice: b_choice,
-                            },
-                        );
+                        let event: des::Response<KinshipEvent, EvolutionaryStats> =
+                            des::Response::event(
+                                current_t + 1,
+                                KinshipEvent::RoundResult {
+                                    match_id: *match_id,
+                                    round_num,
+                                    agent_a_id: match_state.agent_a_id,
+                                    agent_b_id: match_state.agent_b_id,
+                                    agent_a_choice: a_choice,
+                                    agent_b_choice: b_choice,
+                                },
+                            );
 
                         // Check if more rounds needed
                         match_state.rounds_remaining -= 1;
@@ -706,7 +731,8 @@ impl des::Agent<KinshipEvent, EvolutionaryStats> for PopulationCoordinator {
 
                 for agent_data in new_population {
                     // Register new agent
-                    self.agent_registry.insert(agent_data.id, agent_data.clone());
+                    self.agent_registry
+                        .insert(agent_data.id, agent_data.clone());
 
                     // Create strategy
                     let strategy: Box<dyn Strategy> = if agent_data.strategy_name == "TitForTat" {

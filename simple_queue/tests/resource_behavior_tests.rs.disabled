@@ -1,7 +1,7 @@
 // Demonstration of Given-When-Then testing for agent behavior
 // These tests verify Resource agent state transitions
 
-use simple_queue::{Event, Resource, Stats};
+use simple_queue::{Event, Resource};
 
 // Note: These tests require making Resource fields public
 // Current implementation has private fields, so these are examples of the target design
@@ -29,7 +29,10 @@ fn given_resource_has_capacity_when_consumer_requests_then_immediately_acquired(
             assert_eq!(*cid, 42, "Should be for consumer 42");
             assert_eq!(*req_t, 10, "Request time should match current time");
         }
-        _ => panic!("Expected ResourceAcquired event, got {:?}", response.events[0]),
+        _ => panic!(
+            "Expected ResourceAcquired event, got {:?}",
+            response.events[0]
+        ),
     }
 
     // THEN: Resource internal state updated
@@ -53,7 +56,11 @@ fn given_full_resource_when_consumer_requests_then_queued_not_acquired() {
 
     // THEN: No immediate acquisition - consumer is queued
     assert_eq!(response.events.len(), 0, "Should not emit any events");
-    assert_eq!(resource.consumer_queue.len(), 1, "Consumer should be queued");
+    assert_eq!(
+        resource.consumer_queue.len(),
+        1,
+        "Consumer should be queued"
+    );
     assert_eq!(resource.consumer_count, 1, "Consumer count unchanged");
     assert!(
         resource.consumers_active.contains(&2),
@@ -86,7 +93,11 @@ fn given_queued_consumers_when_resource_released_then_next_consumer_acquires() {
     let response = resource.act(25, &Event::ResourceReleased(0, 1, 10));
 
     // THEN: Next queued consumer (id=2, requested at t=15) acquires resource
-    assert_eq!(response.events.len(), 1, "Should emit ResourceAcquired event");
+    assert_eq!(
+        response.events.len(),
+        1,
+        "Should emit ResourceAcquired event"
+    );
 
     match &response.events[0] {
         (t, Event::ResourceAcquired(rid, cid, req_t)) => {
@@ -100,8 +111,14 @@ fn given_queued_consumers_when_resource_released_then_next_consumer_acquires() {
     // THEN: Resource state updated correctly
     assert_eq!(resource.consumer_count, 1, "Still at capacity");
     assert_eq!(resource.consumer_queue.len(), 1, "One consumer dequeued");
-    assert!(!resource.consumers_active.contains(&2), "Consumer 2 no longer waiting");
-    assert!(resource.consumers_active.contains(&3), "Consumer 3 still waiting");
+    assert!(
+        !resource.consumers_active.contains(&2),
+        "Consumer 2 no longer waiting"
+    );
+    assert!(
+        resource.consumers_active.contains(&3),
+        "Consumer 3 still waiting"
+    );
 
     // THEN: Wait time statistics tracked
     // Consumer 2 waited from t=15 to t=25 = 10 time units
@@ -124,17 +141,27 @@ fn given_queued_consumer_when_request_expires_then_removed_from_queue() {
 
     // THEN: Consumer removed from active set
     assert_eq!(response.events.len(), 0, "No events emitted");
-    assert!(!resource.consumers_active.contains(&2), "Consumer 2 marked as expired");
+    assert!(
+        !resource.consumers_active.contains(&2),
+        "Consumer 2 marked as expired"
+    );
 
     // THEN: Expiry statistics tracked
     assert_eq!(resource.stats.expiry_count, 1);
-    assert_eq!(resource.stats.wait_sum, 20, "Wait time until expiry tracked");
+    assert_eq!(
+        resource.stats.wait_sum, 20,
+        "Wait time until expiry tracked"
+    );
 
     // WHEN: Resource is released
     let response = resource.act(40, &Event::ResourceReleased(0, 1, 10));
 
     // THEN: No consumer acquires (expired consumer skipped in queue)
-    assert_eq!(response.events.len(), 0, "Expired consumer not granted access");
+    assert_eq!(
+        response.events.len(),
+        0,
+        "Expired consumer not granted access"
+    );
     assert_eq!(resource.consumer_count, 0, "Resource now idle");
 }
 
@@ -152,8 +179,14 @@ fn given_multiple_queued_consumers_when_one_expires_then_others_remain() {
 
     // THEN: Consumer 3 removed from active set
     assert!(!resource.consumers_active.contains(&3));
-    assert!(resource.consumers_active.contains(&2), "Consumer 2 still active");
-    assert!(resource.consumers_active.contains(&4), "Consumer 4 still active");
+    assert!(
+        resource.consumers_active.contains(&2),
+        "Consumer 2 still active"
+    );
+    assert!(
+        resource.consumers_active.contains(&4),
+        "Consumer 4 still active"
+    );
 
     // WHEN: Resource is released
     let response = resource.act(35, &Event::ResourceReleased(0, 1, 10));
@@ -208,7 +241,10 @@ fn given_resource_when_multiple_operations_then_stats_accumulate_correctly() {
     assert_eq!(resource.stats.arrival_count, 3, "Three arrivals");
     assert_eq!(resource.stats.acquired_count, 3, "Three acquisitions");
     assert_eq!(resource.stats.expiry_count, 0, "No expirations");
-    assert_eq!(resource.stats.consume_sum, 40, "Total consume time: 20 + 20");
+    assert_eq!(
+        resource.stats.consume_sum, 40,
+        "Total consume time: 20 + 20"
+    );
     // Consumer 3 waited from t=20 to t=30 = 10 time units
     assert_eq!(resource.stats.wait_sum, 10, "Total wait time");
 }
