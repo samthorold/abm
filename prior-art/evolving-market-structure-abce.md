@@ -120,7 +120,7 @@ AFTERNOON:
 - Loyalty index L_ij for each buyer i in their queue:
   ```
   L_ij(t) = Σ(x=1 to t) [r_ij(t-x) / (1+α)^(t-x)]
-  
+
   where:
   r_ij(t-x) = α if buyer i visited seller j on day x
   r_ij(t-x) = 0 otherwise
@@ -223,7 +223,7 @@ Morning Pricing (conditional on loyalty and stock/queue ratio):
   IF [loyalty=low, ratio=low] THEN [price=1]   s=1.00
   ...
   IF [loyalty=high, ratio=high] THEN [price=20] s=1.00
-  
+
 Total rules: 3 loyalty classes × 3 ratio classes × 21 prices = 189 rules
 ```
 
@@ -234,7 +234,7 @@ Total rules: 3 loyalty classes × 3 ratio classes × 21 prices = 189 rules
 ```
 ALGORITHM: Stochastic Auction for Rule Selection
 
-INPUT: 
+INPUT:
   - rules: Set of applicable rules
   - noise_std: Standard deviation for exploration (σ = 0.10)
   - tremble_prob: Probability of random selection (p = 0.025)
@@ -249,7 +249,7 @@ PROCEDURE:
 2. Normalize strengths to [0,1]
    s_min ← MIN(rule.strength for rule in applicable_rules)
    s_max ← MAX(rule.strength for rule in applicable_rules)
-   
+
    FOR EACH rule in applicable_rules:
        IF s_max > s_min THEN
            s_norm[rule] ← (rule.strength - s_min) / (s_max - s_min)
@@ -270,7 +270,7 @@ PROCEDURE:
 
 4. Select highest bid
    selected_rule ← ARGMAX(bid)
-   
+
 5. RETURN selected_rule
 ```
 
@@ -297,7 +297,7 @@ OUTPUT:
 PROCEDURE:
   s_j(t) ← s_j(t-1) - c·s_j(t-1) + c·π(t-1)
   s_j(t) ← (1-c)·s_j(t-1) + c·π(t-1)
-  
+
   RETURN s_j(t)
 ```
 
@@ -337,12 +337,12 @@ Morning Price Acceptance:
       reward ← p_out - price_paid
       // Can be negative if buyer accepted unprofitable price
   END IF
-  
+
   IF rejected_morning AND transacted_afternoon THEN
       reward_for_rejection ← MAX(0, p_out - price_afternoon)
       // Rejection credited only if led to better outcome
   END IF
-  
+
   IF rejected_morning AND rejected_afternoon THEN
       reward_for_rejection ← 0
       // Rejection led nowhere
@@ -376,14 +376,14 @@ ALGORITHM: Seller Reward Computation
 
 Supply Quantity:
   net_profit ← gross_revenue - (supply_quantity × p_in)
-  
+
   // Normalize to [0,1] using last 200 days
   profit_history ← APPEND(profit_history, net_profit)
   recent_profits ← LAST_N(profit_history, 200)
-  
+
   min_profit ← MIN(recent_profits)
   max_profit ← MAX(recent_profits)
-  
+
   IF max_profit > min_profit THEN
       reward ← (net_profit - min_profit) / (max_profit - min_profit)
   ELSE
@@ -402,7 +402,7 @@ Queue Handling Parameter β:
 Pricing (Morning and Afternoon):
   // For each rule used k times during session
   total_revenue_from_rule ← SUM(accepted_prices_using_this_rule)
-  
+
   IF times_rule_used > 0 THEN
       average_revenue ← total_revenue_from_rule / times_rule_used
       reward ← average_revenue / max_price  // Normalize to [0,1]
@@ -442,10 +442,10 @@ PROCEDURE:
   ELSE
       r ← 0
   END IF
-  
+
   // Decay previous loyalty and add today's contribution
   L_ij_new ← L_ij_previous / (1 + α) + r
-  
+
   RETURN L_ij_new
 ```
 
@@ -492,7 +492,7 @@ OUTPUT:
 PROCEDURE:
 1. Compute weights for each buyer
    weights ← EMPTY_LIST
-   
+
    FOR EACH buyer_id IN queue:
        L ← loyalty_values[buyer_id]
        weight ← (1 + L)^β
@@ -502,7 +502,7 @@ PROCEDURE:
 2. Normalize to probabilities
    total_weight ← SUM(weights)
    probabilities ← EMPTY_LIST
-   
+
    FOR EACH w IN weights:
        prob ← w / total_weight
        APPEND(probabilities, prob)
@@ -510,7 +510,7 @@ PROCEDURE:
 
 3. Random selection with these probabilities
    selected_buyer ← RANDOM_CHOICE(queue, probabilities)
-   
+
 4. RETURN selected_buyer
 ```
 
@@ -561,7 +561,7 @@ PROCEDURE:
 
 ALGORITHM: Classify Stock/Queue Ratio
 
-INPUT: 
+INPUT:
   - stock: Current inventory
   - queue_length: Number of buyers waiting
 
@@ -571,9 +571,9 @@ PROCEDURE:
   IF queue_length = 0 THEN
       RETURN "high"  // No queue, plenty of stock
   END IF
-  
+
   ratio ← stock / queue_length
-  
+
   IF ratio < 0.75 THEN
       RETURN "low"    // Stock scarce relative to queue
   ELSE IF ratio < 1.25 THEN
@@ -600,7 +600,7 @@ OUTPUT:
 PROCEDURE:
 1. Filter rules matching current state
    applicable_rules ← EMPTY_LIST
-   
+
    FOR EACH rule IN price_rules:
        IF rule.loyalty = loyalty_class AND rule.ratio = ratio_class THEN
            APPEND(applicable_rules, rule)
@@ -609,27 +609,27 @@ PROCEDURE:
 
 2. Run stochastic auction among applicable rules
    bids ← EMPTY_LIST
-   
+
    FOR EACH rule IN applicable_rules:
        // Normalize strength
        strength_norm ← NORMALIZE(rule.strength, applicable_rules)
-       
+
        // Add noise
        noise ← NORMAL(mean=0, std=0.10)
-       
+
        // Handle trembling hand
        IF RANDOM() < 0.025 THEN
            bid ← RANDOM()
        ELSE
            bid ← strength_norm + noise
        END IF
-       
+
        APPEND(bids, (bid, rule.price))
    END FOR
 
 3. Return price of winning rule
    (max_bid, winning_price) ← ARGMAX(bids, key=first_element)
-   
+
 4. RETURN winning_price
 ```
 
@@ -850,7 +850,7 @@ Days 2500-5000:
   Days 1-25: 8%
   Days 2476-2500: 41%
   Days 4976-5000: 41%
-  
+
 Comparison to real Marseille fish market: 25-50% (depending on fish type)
 ```
 
@@ -878,7 +878,7 @@ Repeat customers (visited same seller previous day):
 Switching customers (visited different seller):
   Service rate: 93.0%
   Late arrival: 7.0%
-  
+
 Relative advantage: 4.0 percentage points
 ```
 
@@ -896,7 +896,7 @@ Example queue: [Buyer A (L=0.9), Buyer B (L=0.2), Buyer C (L=0.5)]
 
 β = 0 (no preference):
   Probabilities: [33.3%, 33.3%, 33.3%]
-  
+
 β = +10:
   Weights: [(1.9)^10=613, (1.2)^10=6.2, (1.5)^10=57.7]
   Probabilities: [90.5%, 0.9%, 8.5%]
@@ -921,17 +921,17 @@ Sellers don't consciously decide "I should reward loyalty." Instead:
 
 ```
 When returning to same seller vs. switching:
-  
+
   Returning:
     Avg payoff: 4.50
     Service rate: 97%
     Avg price if served: 10.3
-    
+
   Switching:
     Avg payoff: 4.25
     Service rate: 93%
     Avg price if served: 10.3
-    
+
   Advantage of loyalty: +0.25 per interaction (5.6%)
 ```
 
@@ -946,12 +946,12 @@ When dealing with repeat customer vs. newcomer:
     Avg gross revenue: 9.50 per proposal
     Acceptance rate: 92%
     Effective revenue: 0.92 × 10.35 = 9.52
-    
+
   Newcomer:
     Avg gross revenue: 9.09 per proposal
     Acceptance rate: 88%
     Effective revenue: 0.88 × 10.31 = 9.07
-    
+
   Advantage of repeat customers: +0.45 per interaction (5.0%)
 ```
 
@@ -963,7 +963,7 @@ All sellers (100%) experience higher gross revenue from repeat customers.
 Per-transaction surplus split (when transaction occurs):
   Repeat customers: Buyer gets 4.65, Seller gets 10.35 (total: 15.00)
   Switching customers: Buyer gets 4.69, Seller gets 10.31 (total: 15.00)
-  
+
 Switching customers get slightly better prices! So why are loyal relationships beneficial?
 
 Per-interaction expected value (including service/acceptance failures):
@@ -1216,7 +1216,7 @@ Within buyer type, loyalty still beneficial:
 Type 1 buyers:
   High loyalty (γ>0.8): Pay avg 9.42, service rate 96%
   Low loyalty (γ<0.6): Pay avg 9.32, service rate 88%
-  
+
 Type 3 buyers:
   High loyalty (γ>0.8): Pay avg 9.86, service rate 98%
   Low loyalty (γ<0.6): Pay avg 9.76, service rate 94%
@@ -1247,7 +1247,7 @@ PROCEDURE:
 
 1. Initialize agents
    sellers ← CREATE_ARRAY(n_sellers) of Seller objects with p_in
-   
+
    IF buyer_types IS NULL THEN
        buyers ← CREATE_ARRAY(n_buyers) of Buyer objects with p_out=15
    ELSE
@@ -1262,35 +1262,35 @@ PROCEDURE:
 
 3. Main simulation loop
    FOR day FROM 0 TO n_days-1:
-   
+
        // ===== MORNING SESSION =====
-       
+
        // Sellers decide supply
        FOR EACH seller IN sellers:
            seller.CHOOSE_SUPPLY()
        END FOR
-       
+
        // Buyers choose sellers
        morning_queues ← MAP(seller_id → empty list)
        FOR EACH buyer IN buyers:
            chosen_seller ← buyer.CHOOSE_SELLER(session="morning")
            APPEND(morning_queues[chosen_seller], buyer.id)
        END FOR
-       
+
        // Sellers handle morning queues
        morning_transactions ← EMPTY_LIST
        FOR EACH seller IN sellers:
            seller.CHOOSE_BETA()  // Queue handling parameter
-           
+
            queue ← morning_queues[seller.id]
            seller_loyalty ← MAP(buyer_id → loyalty[buyer_id, seller.id])
-           
+
            transactions ← seller.HANDLE_QUEUE(queue, seller_loyalty, "morning")
            APPEND_ALL(morning_transactions, transactions)
        END FOR
-       
+
        // ===== AFTERNOON SESSION =====
-       
+
        // Unsatisfied buyers choose sellers
        afternoon_queues ← MAP(seller_id → empty list)
        FOR EACH buyer IN buyers:
@@ -1301,47 +1301,47 @@ PROCEDURE:
                END IF
            END IF
        END FOR
-       
+
        // Sellers handle afternoon queues
        afternoon_transactions ← EMPTY_LIST
        FOR EACH seller IN sellers:
            queue ← afternoon_queues[seller.id]
            IF LENGTH(queue) > 0 AND seller.stock > 0 THEN
                seller_loyalty ← MAP(buyer_id → loyalty[buyer_id, seller.id])
-               
+
                transactions ← seller.HANDLE_QUEUE(queue, seller_loyalty, "afternoon")
                APPEND_ALL(afternoon_transactions, transactions)
            END IF
        END FOR
-       
+
        // ===== END OF DAY =====
-       
+
        // Update loyalty matrix
        FOR EACH buyer IN buyers:
            FOR EACH seller IN sellers:
-               visited ← (buyer.visited_morning = seller.id OR 
+               visited ← (buyer.visited_morning = seller.id OR
                          buyer.visited_afternoon = seller.id)
                loyalty[buyer.id, seller.id] ← UPDATE_LOYALTY(
-                   loyalty[buyer.id, seller.id], 
+                   loyalty[buyer.id, seller.id],
                    visited
                )
            END FOR
        END FOR
-       
+
        // Reinforcement learning updates
        FOR EACH buyer IN buyers:
            buyer.UPDATE_STRENGTHS()
        END FOR
-       
+
        FOR EACH seller IN sellers:
            seller.UPDATE_STRENGTHS()
        END FOR
-       
+
        // Unsold stock perishes
        FOR EACH seller IN sellers:
            seller.stock ← 0
        END FOR
-       
+
        // Reset daily state
        FOR EACH buyer IN buyers:
            buyer.RESET_DAILY_STATE()
@@ -1349,9 +1349,9 @@ PROCEDURE:
        FOR EACH seller IN sellers:
            seller.RESET_DAILY_STATE()
        END FOR
-       
+
        // Record data
-       RECORD_DAY_DATA(day, buyers, sellers, loyalty, 
+       RECORD_DAY_DATA(day, buyers, sellers, loyalty,
                       morning_transactions, afternoon_transactions)
    END FOR
 
@@ -1368,13 +1368,13 @@ ATTRIBUTES:
   - p_in: Purchase price for supply
   - stock: Current inventory
   - beta: Queue handling parameter
-  
+
   // Classifier systems for each decision
   - supply_rules: Array of supply decision rules
   - beta_rules: Array of queue handling rules
   - price_rules_morning: Array of pricing rules for morning
   - price_rules_afternoon: Array of pricing rules for afternoon
-  
+
   // Daily tracking
   - gross_revenue: Revenue for current day
   - net_profit: Profit for current day
@@ -1407,7 +1407,7 @@ METHOD INIT_PRICE_RULES():
   rules ← EMPTY_ARRAY
   loyalty_classes ← ['low', 'medium', 'high']
   ratio_classes ← ['low', 'medium', 'high']
-  
+
   FOR EACH loyalty IN loyalty_classes:
       FOR EACH ratio IN ratio_classes:
           FOR price FROM 0 TO 20:
@@ -1438,23 +1438,23 @@ METHOD CHOOSE_BETA():
 METHOD HANDLE_QUEUE(queue, loyalty_dict, session):
   transactions ← EMPTY_ARRAY
   remaining_queue ← COPY(queue)
-  
+
   WHILE LENGTH(remaining_queue) > 0 AND this.stock > 0:
       // Select next buyer using loyalty-weighted lottery
       buyer_id ← SELECT_NEXT_BUYER(remaining_queue, loyalty_dict)
       REMOVE(remaining_queue, buyer_id)
-      
+
       // Determine price to offer
       buyer_loyalty ← loyalty_dict[buyer_id]
       price ← DETERMINE_PRICE(buyer_loyalty, session)
-      
+
       // Buyer accepts or rejects
       accepted ← buyers[buyer_id].RESPOND_TO_PRICE(price, session)
-      
+
       IF accepted THEN
           this.stock ← this.stock - 1
           this.gross_revenue ← this.gross_revenue + price
-          
+
           transaction ← {
               seller: this.id,
               buyer: buyer_id,
@@ -1465,12 +1465,12 @@ METHOD HANDLE_QUEUE(queue, loyalty_dict, session):
           APPEND(transactions, transaction)
       END IF
   END WHILE
-  
+
   // Remaining buyers in queue denied service
   FOR EACH buyer_id IN remaining_queue:
       buyers[buyer_id].DENIED_SERVICE(session)
   END FOR
-  
+
   RETURN transactions
 
 METHOD SELECT_NEXT_BUYER(queue, loyalty_dict):
@@ -1480,14 +1480,14 @@ METHOD SELECT_NEXT_BUYER(queue, loyalty_dict):
       weight ← (1 + L) ^ this.beta
       APPEND(weights, weight)
   END FOR
-  
+
   // Normalize to probabilities
   total ← SUM(weights)
   probabilities ← EMPTY_ARRAY
   FOR EACH w IN weights:
       APPEND(probabilities, w / total)
   END FOR
-  
+
   // Random selection
   selected ← RANDOM_CHOICE(queue, probabilities)
   RETURN selected
@@ -1496,45 +1496,45 @@ METHOD DETERMINE_PRICE(buyer_loyalty, session):
   // Classify state
   loyalty_class ← CLASSIFY_LOYALTY(buyer_loyalty)
   ratio_class ← CLASSIFY_STOCK_QUEUE_RATIO(this.stock, this.current_queue_length)
-  
+
   // Get applicable rules
   IF session = "morning" THEN
       rules ← this.price_rules_morning
   ELSE
       rules ← this.price_rules_afternoon
   END IF
-  
-  applicable ← FILTER(rules, 
-      WHERE rule.condition_loyalty = loyalty_class 
+
+  applicable ← FILTER(rules,
+      WHERE rule.condition_loyalty = loyalty_class
       AND rule.condition_ratio = ratio_class)
-  
+
   // Stochastic auction
   selected_rule ← STOCHASTIC_AUCTION(applicable, 0.10, 0.025)
-  
+
   // Track rule usage for later reinforcement
   selected_rule.times_used ← selected_rule.times_used + 1
   APPEND(this.active_price_rules, selected_rule)
-  
+
   RETURN selected_rule.action
 
 METHOD UPDATE_STRENGTHS():
   c ← 0.05  // Learning rate
-  
+
   // Supply rule
   reward ← COMPUTE_SUPPLY_REWARD()
-  this.active_supply_rule.strength ← 
+  this.active_supply_rule.strength ←
       (1-c) × this.active_supply_rule.strength + c × reward
-  
+
   // Beta rule
   reward ← COMPUTE_BETA_REWARD()
-  this.active_beta_rule.strength ← 
+  this.active_beta_rule.strength ←
       (1-c) × this.active_beta_rule.strength + c × reward
-  
+
   // Price rules
   FOR EACH rule IN this.active_price_rules:
       reward ← rule.revenue_accumulated / (rule.times_used × 20)
       rule.strength ← (1-c) × rule.strength + c × reward
-      
+
       // Reset daily tracking
       rule.times_used ← 0
       rule.revenue_accumulated ← 0
@@ -1543,18 +1543,18 @@ METHOD UPDATE_STRENGTHS():
 METHOD COMPUTE_SUPPLY_REWARD():
   this.net_profit ← this.gross_revenue - (this.stock × this.p_in)
   APPEND(this.profit_history, this.net_profit)
-  
+
   // Normalize using last 200 days
   recent_profits ← LAST_N(this.profit_history, 200)
   min_profit ← MIN(recent_profits)
   max_profit ← MAX(recent_profits)
-  
+
   IF max_profit > min_profit THEN
       reward ← (this.net_profit - min_profit) / (max_profit - min_profit)
   ELSE
       reward ← 0.5
   END IF
-  
+
   RETURN reward
 
 METHOD COMPUTE_BETA_REWARD():
@@ -1577,13 +1577,13 @@ CLASS Buyer:
 ATTRIBUTES:
   - id: Buyer identifier
   - p_out: Resale price (value of fish)
-  
+
   // Classifier systems
   - seller_choice_morning: Array of seller choice rules for morning
   - seller_choice_afternoon: Array of seller choice rules for afternoon
   - price_acceptance_morning: Array of price acceptance/rejection rules
   - price_acceptance_afternoon: Array of price acceptance/rejection rules
-  
+
   // Daily state
   - transacted_morning: Boolean
   - transacted_afternoon: Boolean
@@ -1628,15 +1628,15 @@ METHOD CHOOSE_SELLER(session):
       rules ← this.seller_choice_afternoon
       // Filter to sellers still open
       rules ← FILTER(rules, WHERE sellers[rule.action].stock > 0)
-      
+
       IF LENGTH(rules) = 0 THEN
           RETURN NULL  // All sold out
       END IF
   END IF
-  
+
   selected_rule ← STOCHASTIC_AUCTION(rules, 0.10, 0.025)
   seller_id ← selected_rule.action
-  
+
   IF session = "morning" THEN
       this.visited_morning ← seller_id
       this.active_seller_choice_morning ← selected_rule
@@ -1644,7 +1644,7 @@ METHOD CHOOSE_SELLER(session):
       this.visited_afternoon ← seller_id
       this.active_seller_choice_afternoon ← selected_rule
   END IF
-  
+
   RETURN seller_id
 
 METHOD RESPOND_TO_PRICE(price, session):
@@ -1653,13 +1653,13 @@ METHOD RESPOND_TO_PRICE(price, session):
   ELSE
       rules ← this.price_acceptance_afternoon
   END IF
-  
+
   // Get applicable rules for this price
   applicable ← FILTER(rules, WHERE rule.condition_price = price)
-  
+
   selected_rule ← STOCHASTIC_AUCTION(applicable, 0.10, 0.025)
   decision ← selected_rule.action
-  
+
   IF session = "morning" THEN
       this.price_morning ← price
       this.active_price_rule_morning ← selected_rule
@@ -1673,7 +1673,7 @@ METHOD RESPOND_TO_PRICE(price, session):
           this.transacted_afternoon ← TRUE
       END IF
   END IF
-  
+
   RETURN (decision = 'accept')
 
 METHOD DENIED_SERVICE(session):
@@ -1685,16 +1685,16 @@ METHOD DENIED_SERVICE(session):
 
 METHOD UPDATE_STRENGTHS():
   c ← 0.05  // Learning rate
-  
+
   // Morning seller choice
   reward ← COMPUTE_SELLER_CHOICE_REWARD("morning")
-  this.active_seller_choice_morning.strength ← 
+  this.active_seller_choice_morning.strength ←
       (1-c) × this.active_seller_choice_morning.strength + c × reward
-  
+
   // Morning price acceptance/rejection
   IF this.transacted_morning THEN
       reward ← this.p_out - this.price_morning
-      this.active_price_rule_morning.strength ← 
+      this.active_price_rule_morning.strength ←
           (1-c) × this.active_price_rule_morning.strength + c × reward
   ELSE IF this.active_price_rule_morning EXISTS THEN
       // Rejected in morning
@@ -1703,26 +1703,26 @@ METHOD UPDATE_STRENGTHS():
       ELSE
           reward ← 0
       END IF
-      this.active_price_rule_morning.strength ← 
+      this.active_price_rule_morning.strength ←
           (1-c) × this.active_price_rule_morning.strength + c × reward
   END IF
-  
+
   // Afternoon seller choice
   IF this.active_seller_choice_afternoon EXISTS THEN
       reward ← COMPUTE_SELLER_CHOICE_REWARD("afternoon")
-      this.active_seller_choice_afternoon.strength ← 
+      this.active_seller_choice_afternoon.strength ←
           (1-c) × this.active_seller_choice_afternoon.strength + c × reward
   END IF
-  
+
   // Afternoon price acceptance/rejection
   IF this.transacted_afternoon THEN
       reward ← this.p_out - this.price_afternoon
-      this.active_price_rule_afternoon.strength ← 
+      this.active_price_rule_afternoon.strength ←
           (1-c) × this.active_price_rule_afternoon.strength + c × reward
   ELSE IF this.active_price_rule_afternoon EXISTS THEN
       // Rejected in afternoon
       reward ← 0
-      this.active_price_rule_afternoon.strength ← 
+      this.active_price_rule_afternoon.strength ←
           (1-c) × this.active_price_rule_afternoon.strength + c × reward
   END IF
 
@@ -1757,24 +1757,24 @@ FUNCTION STOCHASTIC_AUCTION(rules, noise_std, tremble_prob):
     - rules: Array of rule objects with 'strength' attribute
     - noise_std: Standard deviation of exploration noise (default 0.10)
     - tremble_prob: Probability of random trembling hand (default 0.025)
-  
+
   OUTPUT:
     - Selected rule object
-  
+
   PROCEDURE:
     IF LENGTH(rules) = 0 THEN
         RAISE ERROR "No rules provided"
     END IF
-    
+
     IF LENGTH(rules) = 1 THEN
         RETURN rules[0]
     END IF
-    
+
     // Normalize strengths to [0,1]
     strengths ← EXTRACT(rules, 'strength')
     min_s ← MIN(strengths)
     max_s ← MAX(strengths)
-    
+
     IF max_s > min_s THEN
         strengths_norm ← EMPTY_ARRAY
         FOR EACH s IN strengths:
@@ -1784,7 +1784,7 @@ FUNCTION STOCHASTIC_AUCTION(rules, noise_std, tremble_prob):
     ELSE
         strengths_norm ← ARRAY_FILLED_WITH(0.5, LENGTH(strengths))
     END IF
-    
+
     // Compute bids
     bids ← EMPTY_ARRAY
     FOR i FROM 0 TO LENGTH(rules)-1:
@@ -1796,10 +1796,10 @@ FUNCTION STOCHASTIC_AUCTION(rules, noise_std, tremble_prob):
             noise ← NORMAL(mean=0, std=noise_std)
             bid ← strengths_norm[i] + noise
         END IF
-        
+
         APPEND(bids, bid)
     END FOR
-    
+
     // Select highest bid
     max_bid_idx ← ARGMAX(bids)
     RETURN rules[max_bid_idx]
@@ -1811,17 +1811,17 @@ FUNCTION UPDATE_LOYALTY(L_prev, visited_today, alpha):
     - L_prev: Previous loyalty value
     - visited_today: Boolean
     - alpha: Decay parameter (default 0.25)
-  
+
   OUTPUT:
     - Updated loyalty value
-  
+
   PROCEDURE:
     IF visited_today THEN
         r ← alpha
     ELSE
         r ← 0
     END IF
-    
+
     L_new ← L_prev / (1 + alpha) + r
     RETURN L_new
 
@@ -1830,7 +1830,7 @@ FUNCTION UPDATE_LOYALTY(L_prev, visited_today, alpha):
 FUNCTION CLASSIFY_LOYALTY(L):
   INPUT: L (loyalty value between 0 and 1)
   OUTPUT: loyalty_class ("low", "medium", or "high")
-  
+
   PROCEDURE:
     IF L < 0.20 THEN
         RETURN "low"
@@ -1846,16 +1846,16 @@ FUNCTION CLASSIFY_STOCK_QUEUE_RATIO(stock, queue_length):
   INPUT:
     - stock: Current inventory
     - queue_length: Number of buyers waiting
-  
+
   OUTPUT: ratio_class ("low", "medium", or "high")
-  
+
   PROCEDURE:
     IF queue_length = 0 THEN
         RETURN "high"
     END IF
-    
+
     ratio ← stock / queue_length
-    
+
     IF ratio < 0.75 THEN
         RETURN "low"
     ELSE IF ratio < 1.25 THEN
@@ -1870,22 +1870,22 @@ FUNCTION COMPUTE_LOYALTY_CONCENTRATION(loyalty_matrix, buyer_id):
   INPUT:
     - loyalty_matrix: 2D array [n_buyers, n_sellers]
     - buyer_id: Buyer index
-  
+
   OUTPUT:
     - Concentration index γ (0 to 1)
-  
+
   PROCEDURE:
     L_i ← loyalty_matrix[buyer_id, ALL_COLUMNS]
-    
+
     numerator ← SUM(L_i^2)
     denominator ← (SUM(L_i))^2
-    
+
     IF denominator > 0 THEN
         gamma ← numerator / denominator
     ELSE
         gamma ← 1.0 / NUMBER_OF_SELLERS  // Uniform if no visits yet
     END IF
-    
+
     RETURN gamma
 ```
 
@@ -1905,19 +1905,19 @@ METHOD RECORD_DAY(day, buyers, sellers, loyalty, morning_trans, afternoon_trans)
   ELSE
       avg_price_morning ← NULL
   END IF
-  
+
   IF LENGTH(afternoon_trans) > 0 THEN
       avg_price_afternoon ← MEAN(EXTRACT(afternoon_trans, 'price'))
   ELSE
       avg_price_afternoon ← NULL
   END IF
-  
+
   loyalty_concentrations ← EMPTY_ARRAY
   FOR i FROM 0 TO LENGTH(buyers)-1:
       gamma ← COMPUTE_LOYALTY_CONCENTRATION(loyalty, i)
       APPEND(loyalty_concentrations, gamma)
   END FOR
-  
+
   day_stats ← {
       day: day,
       avg_price_morning: avg_price_morning,
@@ -1926,9 +1926,9 @@ METHOD RECORD_DAY(day, buyers, sellers, loyalty, morning_trans, afternoon_trans)
       n_transactions_afternoon: LENGTH(afternoon_trans),
       avg_loyalty: MEAN(loyalty_concentrations)
   }
-  
+
   APPEND(this.daily_data, day_stats)
-  
+
   // Individual transactions
   FOR EACH trans IN (morning_trans + afternoon_trans):
       trans.day ← day
@@ -1937,12 +1937,12 @@ METHOD RECORD_DAY(day, buyers, sellers, loyalty, morning_trans, afternoon_trans)
 
 METHOD ANALYZE_STEADY_STATE(start_day, end_day):
   // Filter to steady state period
-  transactions ← FILTER(this.transaction_data, 
+  transactions ← FILTER(this.transaction_data,
       WHERE start_day ≤ trans.day < end_day)
-  
-  daily ← FILTER(this.daily_data, 
+
+  daily ← FILTER(this.daily_data,
       WHERE start_day ≤ d.day < end_day)
-  
+
   // Price distribution
   prices ← EXTRACT(transactions, 'price')
   price_dist ← {
@@ -1952,7 +1952,7 @@ METHOD ANALYZE_STEADY_STATE(start_day, end_day):
       mode: MODE(prices),
       histogram: HISTOGRAM(prices, bins=[0,1,2,...,21])
   }
-  
+
   // Loyalty statistics
   loyalty_values ← EXTRACT(daily, 'avg_loyalty')
   loyalty_stats ← {
@@ -1960,7 +1960,7 @@ METHOD ANALYZE_STEADY_STATE(start_day, end_day):
       std: STD(loyalty_values),
       trajectory: loyalty_values
   }
-  
+
   RETURN {
       price_distribution: price_dist,
       loyalty: loyalty_stats,
@@ -1970,18 +1970,18 @@ METHOD ANALYZE_STEADY_STATE(start_day, end_day):
 METHOD ANALYZE_BUYER_SELLER_RELATIONSHIPS(loyalty_matrix, buyers, sellers, start_day):
   // For each buyer, compute payoff when returning vs switching
   results ← EMPTY_ARRAY
-  
+
   FOR buyer_id FROM 0 TO LENGTH(buyers)-1:
       transactions ← FILTER(this.transaction_data,
           WHERE trans.buyer = buyer_id AND trans.day ≥ start_day)
-      
+
       // Identify repeat vs switching
       FOR i FROM 1 TO LENGTH(transactions)-1:
           prev_seller ← transactions[i-1].seller
           curr_seller ← transactions[i].seller
-          
+
           repeat ← (prev_seller = curr_seller)
-          
+
           result ← {
               buyer: buyer_id,
               repeat: repeat,
@@ -1991,11 +1991,11 @@ METHOD ANALYZE_BUYER_SELLER_RELATIONSHIPS(loyalty_matrix, buyers, sellers, start
           APPEND(results, result)
       END FOR
   END FOR
-  
+
   // Aggregate
   repeat_payoffs ← EXTRACT(FILTER(results, WHERE r.repeat), 'payoff')
   switch_payoffs ← EXTRACT(FILTER(results, WHERE NOT r.repeat), 'payoff')
-  
+
   RETURN {
       avg_payoff_repeat: MEAN(repeat_payoffs),
       avg_payoff_switch: MEAN(switch_payoffs),
@@ -2010,29 +2010,29 @@ END CLASS
 ```
 FUNCTION PLOT_PRICE_EVOLUTION(data_collector):
   daily ← data_collector.daily_data
-  
+
   // Moving average for smoothing
   window ← 20
   days ← EXTRACT(daily, 'day')
-  
+
   prices_morning ← EXTRACT(daily, 'avg_price_morning')
   prices_morning_smooth ← MOVING_AVERAGE(prices_morning, window)
-  
+
   prices_afternoon ← EXTRACT(daily, 'avg_price_afternoon')
   prices_afternoon_smooth ← MOVING_AVERAGE(prices_afternoon, window)
-  
+
   CREATE_FIGURE(width=12, height=6)
   PLOT_LINE(days, prices_morning_smooth, label='Morning', linewidth=2)
   PLOT_LINE(days, prices_afternoon_smooth, label='Afternoon', linewidth=2)
   PLOT_HORIZONTAL_LINE(y=9, color='red', linestyle='dashed', label='p_in (competitive)')
   PLOT_HORIZONTAL_LINE(y=14, color='green', linestyle='dashed', label='p_out-1 (game theory)')
-  
+
   SET_XLABEL('Day')
   SET_YLABEL('Average Price')
   SET_TITLE('Price Evolution Over Time (20-day moving average)')
   ADD_LEGEND()
   ADD_GRID(alpha=0.3)
-  
+
   SAVE_FIGURE('price_evolution.png', dpi=300)
   SHOW_FIGURE()
 
@@ -2040,21 +2040,21 @@ FUNCTION PLOT_PRICE_EVOLUTION(data_collector):
 
 FUNCTION PLOT_LOYALTY_EVOLUTION(data_collector):
   daily ← data_collector.daily_data
-  
+
   window ← 20
   days ← EXTRACT(daily, 'day')
   loyalty ← EXTRACT(daily, 'avg_loyalty')
   loyalty_smooth ← MOVING_AVERAGE(loyalty, window)
-  
+
   CREATE_FIGURE(width=12, height=6)
   PLOT_LINE(days, loyalty_smooth, linewidth=2, color='purple')
-  
+
   SET_XLABEL('Day')
   SET_YLABEL('Average Loyalty (γ)')
   SET_TITLE('Loyalty Evolution Over Time (20-day moving average)')
   SET_Y_LIMITS([0, 1])
   ADD_GRID(alpha=0.3)
-  
+
   SAVE_FIGURE('loyalty_evolution.png', dpi=300)
   SHOW_FIGURE()
 
@@ -2063,19 +2063,19 @@ FUNCTION PLOT_LOYALTY_EVOLUTION(data_collector):
 FUNCTION PLOT_PRICE_DISTRIBUTION(data_collector, start_day, end_day):
   transactions ← FILTER(data_collector.transaction_data,
       WHERE start_day ≤ trans.day < end_day)
-  
+
   prices ← EXTRACT(transactions, 'price')
-  
+
   CREATE_FIGURE(width=10, height=6)
-  PLOT_HISTOGRAM(prices, bins=[0,1,2,...,21], 
-                 density=TRUE, alpha=0.7, 
+  PLOT_HISTOGRAM(prices, bins=[0,1,2,...,21],
+                 density=TRUE, alpha=0.7,
                  color='skyblue', edgecolor='black')
-  
+
   SET_XLABEL('Price')
   SET_YLABEL('Relative Frequency')
   SET_TITLE('Price Distribution (Days ' + start_day + '-' + end_day + ')')
   ADD_GRID(alpha=0.3, axis='y')
-  
+
   SAVE_FIGURE('price_distribution.png', dpi=300)
   SHOW_FIGURE()
 
@@ -2224,19 +2224,19 @@ Target empirical moments:
 1. Price dispersion
    - Coefficient of variation: 6-8%
    - Range: Typically 85% to 115% of mean price
-   
+
 2. Loyalty
    - ~30-40% buyers >95% purchases from single seller
    - Average loyalty concentration: 0.70-0.85
-   
+
 3. Price-loyalty correlation
    - Slightly positive or neutral
    - Loyal customers don't systematically pay much more/less
-   
+
 4. Service differentiation
    - Observable quality differences across sellers
    - Repeat customers better treatment
-   
+
 5. Market clearing
    - Typically >95% of supply sells
    - <5% of buyers go unsatisfied
@@ -2259,10 +2259,10 @@ PROCEDURE:
 DEFINE FUNCTION objective(params):
     // Run simulation with these parameters
     results ← RUN_SIMULATION(params)
-    
+
     // Compute simulated moments
     sim_moments ← COMPUTE_MOMENTS(results)
-    
+
     // Distance from targets
     distance ← 0
     FOR EACH key IN target_moments:
@@ -2270,7 +2270,7 @@ DEFINE FUNCTION objective(params):
         simulated ← sim_moments[key]
         distance ← distance + ((simulated - target) / target)^2
     END FOR
-    
+
     RETURN distance
 END FUNCTION
 
@@ -2317,11 +2317,11 @@ OUTPUT:
 
 PROCEDURE:
   results ← EMPTY_ARRAY
-  
+
   FOR EACH value IN param_range:
       params ← COPY(base_params)
       params[vary_param] ← value
-      
+
       // Run multiple replications
       replications ← EMPTY_ARRAY
       FOR rep FROM 0 TO 9:
@@ -2329,11 +2329,11 @@ PROCEDURE:
           moments ← COMPUTE_MOMENTS(sim_results)
           APPEND(replications, moments)
       END FOR
-      
+
       // Average across replications
       avg_moments ← AVERAGE_MOMENTS(replications)
       std_moments ← STD_MOMENTS(replications)
-      
+
       result ← {
           param_value: value,
           moments: avg_moments,
@@ -2341,7 +2341,7 @@ PROCEDURE:
       }
       APPEND(results, result)
   END FOR
-  
+
   RETURN results
 
 ---
@@ -2442,7 +2442,7 @@ PROCEDURE:
    IF price > p_out THEN
        reward_seller_choice ← -1  // NO!
    END IF
-   
+
    // RIGHT: Seller choice only penalized if denied service
    IF denied_service THEN
        reward_seller_choice ← 0
@@ -2456,7 +2456,7 @@ PROCEDURE:
 
    // WRONG: Use same classifier for morning and afternoon
    price_rules ← INIT_PRICE_RULES()  // Shared
-   
+
    // RIGHT: Separate classifiers for each session
    price_rules_morning ← INIT_PRICE_RULES()
    price_rules_afternoon ← INIT_PRICE_RULES()
@@ -2467,7 +2467,7 @@ PROCEDURE:
 
    // WRONG: Loyalty persists across market closures
    // (Should decay when market not visited)
-   
+
    // RIGHT: Update loyalty every day for all buyer-seller pairs
    FOR i IN buyers:
        FOR j IN sellers:
@@ -2484,7 +2484,7 @@ PROCEDURE:
    all_strengths ← EXTRACT(all_rules, 'strength')
    min_s ← MIN(all_strengths)
    max_s ← MAX(all_strengths)
-   
+
    // RIGHT: Normalize within applicable rule set only
    applicable ← FILTER(rules, WHERE rule matches state)
    strengths ← EXTRACT(applicable, 'strength')
@@ -2505,7 +2505,7 @@ PROCEDURE:
            loyalty[i,j] ← UPDATE(...)
        END FOR
    END FOR
-   
+
    // FAST: Vectorized operation (if language supports)
    loyalty ← loyalty / (1 + alpha) + visit_matrix × alpha
 
@@ -2515,7 +2515,7 @@ PROCEDURE:
 
    // SLOW: Filter rules every time
    applicable ← FILTER(rules, WHERE r.loyalty=L_class)
-   
+
    // FAST: Pre-organize by condition
    rules_by_state ← MAP {
        ('low', 'low'): [...],
@@ -2532,7 +2532,7 @@ PROCEDURE:
    FOR EACH trans IN transactions:
        UPDATE_STRENGTH(...)
    END FOR
-   
+
    // FAST: Accumulate rewards, update once per day
    FOR EACH day IN days:
        ACCUMULATE_REWARDS(...)
@@ -2549,29 +2549,29 @@ PROCEDURE:
    - Homogeneous buyers (p_out = 15)
    - Morning session only
    - Simplified decisions (e.g., no queue handling parameter)
-   
+
 2. Verify basic properties
    - Prices decline from random start
    - Some loyalty emerges
    - Market clears reasonably
-   
+
 3. Add complexity incrementally
    - Add afternoon session
    - Add queue handling parameter β
    - Test after each addition
-   
+
 4. Implement heterogeneity
    - Add multiple buyer types
    - Verify segmentation emerges
-   
+
 5. Calibrate to empirical moments
    - Compare with target moments
    - Adjust parameters systematically
-   
+
 6. Sensitivity analysis
    - Vary parameters around best-fit
    - Check robustness of results
-   
+
 7. Policy experiments
    - Test interventions
    - Generate predictions
