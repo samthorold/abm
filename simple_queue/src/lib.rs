@@ -59,25 +59,6 @@ pub enum Stats {
     ResourceStats(ResourceStats),
 }
 
-// struct Consumer {
-//     consumer_id: usize,
-// }
-
-// impl des::Agent<Event> for Consumer {
-//     fn act(&mut self, current_t: usize, data: &Event) -> des::Response<Event> {
-//         match data {
-//             Event::ResourceAcquired(rid, cid) => {
-//                 if cid != &self.consumer_id {
-//                     return des::Response::new();
-//                 }
-//                 println!("[{}] Consumer {} acquired Resource {}", current_t, cid, rid);
-//                 des::Response::new()
-//             }
-//             _ => des::Response::new(),
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 pub struct ConsumerProcess {
     resource_id: usize,
