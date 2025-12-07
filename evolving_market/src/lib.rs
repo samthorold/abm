@@ -313,7 +313,7 @@ mod tests {
         ];
 
         // Run auction many times, rule 1 should win most often
-        let mut counts = vec![0; 3];
+        let mut counts = [0, 0, 0];
         for _ in 0..1000 {
             let idx = stochastic_auction(&rules, 0.1, 0.025, &mut rng);
             counts[idx] += 1;

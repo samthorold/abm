@@ -171,10 +171,7 @@ fn main() {
     println!("{}", "=".repeat(70));
 
     // Get final generation agents only
-    let all_agents: Vec<AgentStats> = gen_stats
-        .get(&max_generations)
-        .cloned()
-        .unwrap_or_default();
+    let all_agents: Vec<AgentStats> = gen_stats.get(&max_generations).cloned().unwrap_or_default();
 
     let tft_agents: Vec<&AgentStats> = all_agents
         .iter()
