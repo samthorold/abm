@@ -13,6 +13,9 @@ cargo run -p evolution_coop --bin tournament              # Finding A: Robustnes
 cargo run -p evolution_coop --bin initial_viability       # Finding C: Initial viability (single gen)
 cargo run --release -p evolution_coop --bin evolutionary_takeover  # Finding C: Full invasion (use --release for speed)
 
+# Evolving Market Structure (Kirman & Vriend, 2001)
+cargo run -p evolving_market                              # Price dispersion and loyalty emergence
+
 # Run tests
 cargo test
 ```
@@ -253,6 +256,76 @@ max_generations: 50
 
 ---
 
+### Evolving Market Structure (Kirman & Vriend, 2001) ✅
+
+Implementation of Kirman & Vriend's agent-based computational economics (ACE) model demonstrating how price dispersion and buyer-seller loyalty emerge through reinforcement learning without central coordination.
+
+#### Theoretical Background
+
+**The Market Puzzle**: Real fish markets exhibit persistent price dispersion (same good, different prices) and buyer loyalty despite:
+- Perfect information (all buyers see all prices)
+- No product differentiation (homogeneous goods)
+- No switching costs
+- No barriers to entry/exit
+
+**Classical Theory Prediction**: Bertrand competition → single price at marginal cost
+**Empirical Reality**: 15% price dispersion coefficient, stable loyalty patterns
+
+**Core Insight**: Loyalty and preferential treatment co-evolve through mutual reinforcement:
+
+1. **Buyers learn loyalty** → Loyal relationships yield higher service rates (97% vs 93%)
+2. **Sellers reward loyalty** → Loyal customers have higher acceptance rates (92% vs 88%)
+3. **Positive feedback** → System converges to high-loyalty, price-dispersed equilibrium
+
+#### Implementation Features
+
+**Market Structure**:
+```
+- 100 buyers (heterogeneous valuations: 12, 15, 18)
+- 10 sellers (p_in = 9, stock = 15 units/day)
+- 1000 days simulation
+- Discrete prices [0, 20]
+```
+
+**Mechanisms Implemented**:
+
+1. **Classifier System Learning**: Buyers and sellers use rule-based reinforcement learning
+   - Buyers: Learn which sellers to visit based on loyalty
+   - Sellers: Learn price discrimination based on customer loyalty and market state
+
+2. **Stochastic Auction**: Rule selection with exploration noise and trembling hand
+   ```rust
+   stochastic_auction(rules, noise_std=0.1, tremble_prob=0.025)
+   ```
+
+3. **Loyalty Dynamics**: Continuous loyalty values updated each day
+   ```rust
+   L(t) = L(t-1)/(1+α) + (α if visited, else 0)
+   ```
+
+4. **Price Discrimination**: Sellers condition prices on:
+   - Customer loyalty class (Low/Medium/High)
+   - Stock-to-queue ratio (market pressure)
+
+**Expected Results**:
+- Price dispersion emerges naturally (coefficient of variation ~10-15%)
+- Loyalty concentration increases over time (γ → 0.3-0.5)
+- Higher-valuation buyers pay higher average prices
+- Market efficiency ~85-90% (transaction completion rate)
+
+**Run the simulation**:
+```bash
+cargo run -p evolving_market
+# Outputs: market_evolution.csv with daily statistics
+```
+
+#### Further Reading
+
+- **Paper Summary**: `/prior-art/evolving-market-structure-abce.md` - Comprehensive implementation guide
+- **Original Paper**: Kirman, A. & Vriend, N.J. (2001). "Evolving Market Structure: An ACE Model of Price Dispersion and Loyalty." *Journal of Economic Dynamics and Control*, 25(3-4), 459-502.
+
+---
+
 ## Reading
 
 [ABMs in economics and finance (Axtell and Farmer, 2025)](https://ora.ox.ac.uk/objects/uuid:8af3b96e-a088-4e29-ba1e-0760222277b7/files/s6969z182c)
@@ -283,11 +356,11 @@ TODO: Set up custom instructions to optimize for planning and research translati
 
 **Completed**:
 - ✅ The Evolution of Cooperation (Axelrod & Hamilton, 1981) - All three key findings implemented
+- ✅ Kirman and Vriend (2001) - Evolving market structure with price dispersion and loyalty
 
 **TODO**:
 - TRANSIMS code (Barrett et al., 1995, Nagel, Beckman and Barrett, 1998)
 - drug addiction (Agar and Wilson, 2002, Hoffer, Bobashev and Morris, 2009, Heard, Bobashev and Morris, 2014)
-- Kirman and Vriend (2000, 2001) - fish market, loyalty
 - policy relevant and exercised to study policy alternatives (Dawid et al., 2012)
 - Donier et al. (2015) showed that a linear virtual order book profile
 - Aymanns et al. (2016) leverage cycles
