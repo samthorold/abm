@@ -1,0 +1,49 @@
+# Pre-commit hooks for Rust project
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# Skip for a commit: git commit --no-verify
+
+repos:
+  - repo: local
+    hooks:
+      # Format check - mirrors GitHub Actions format job
+      - id: cargo-fmt
+        name: Cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Clippy lint - mirrors GitHub Actions clippy job
+      - id: cargo-clippy
+        name: Cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Test suite - mirrors GitHub Actions test job
+      - id: cargo-test
+        name: Cargo test
+        entry: cargo test --all-features --workspace
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Build check - mirrors GitHub Actions build job (stable only)
+      - id: cargo-build
+        name: Cargo build
+        entry: cargo build --all-features --workspace
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # Optional: Additional useful pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
