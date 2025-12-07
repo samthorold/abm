@@ -99,7 +99,7 @@ fn given_queued_consumers_when_resource_released_then_next_acquires() {
         (t, Event::ResourceAcquired(rid, cid, req_t)) => {
             assert_eq!(*t, 25);
             assert_eq!(*rid, 0);
-            assert_eq!(*cid, 2);  // First in queue
+            assert_eq!(*cid, 2); // First in queue
             assert_eq!(*req_t, 15);
         }
         _ => panic!("Expected ResourceAcquired"),
@@ -108,9 +108,9 @@ fn given_queued_consumers_when_resource_released_then_next_acquires() {
     // THEN: Queue reduced, wait time tracked (all via Stats)
     let stats = get_resource_stats(&resource.stats());
     assert_eq!(stats.current_consumer_count, 1);
-    assert_eq!(stats.current_queue_length, 1);  // Was 2, now 1
+    assert_eq!(stats.current_queue_length, 1); // Was 2, now 1
     assert_eq!(stats.total_acquired, 2);
-    assert_eq!(stats.total_wait_time, 10);  // Consumer 2 waited 15->25
+    assert_eq!(stats.total_wait_time, 10); // Consumer 2 waited 15->25
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn given_queued_consumer_when_request_expires_then_removed() {
     // THEN: Expiry tracked in Stats
     let stats = get_resource_stats(&resource.stats());
     assert_eq!(stats.total_expired, 1);
-    assert_eq!(stats.total_wait_time, 20);  // Waited 15->35
+    assert_eq!(stats.total_wait_time, 20); // Waited 15->35
 
     // WHEN: Resource released
     let response = resource.act(40, &Event::ResourceReleased(0, 1, 10));
@@ -167,7 +167,7 @@ fn given_multiple_queued_when_one_expires_then_others_remain() {
     assert_eq!(stats.total_expired, 1);
     // Queue still has 3 items (expired consumer not yet removed from queue)
     // But active requests decreased
-    assert_eq!(stats.current_active_requests, 2);  // Was 3, now 2
+    assert_eq!(stats.current_active_requests, 2); // Was 3, now 2
 
     // WHEN: Resource released
     let response = resource.act(35, &Event::ResourceReleased(0, 1, 10));
@@ -226,8 +226,8 @@ fn resource_state_transitions_from_empty_to_queuing() {
 
     // State 5: Queue processed
     let s = get_resource_stats(&resource.stats());
-    assert_eq!(s.current_consumer_count, 2);  // Still at capacity
-    assert_eq!(s.current_queue_length, 0);    // Queue cleared
+    assert_eq!(s.current_consumer_count, 2); // Still at capacity
+    assert_eq!(s.current_queue_length, 0); // Queue cleared
     assert!(!s.has_queue());
 }
 
@@ -288,7 +288,7 @@ fn wait_time_statistics_tracked_correctly() {
 
     // Consumer 3 waited from 20 to 80 = 60 time units
     let s = get_resource_stats(&resource.stats());
-    assert_eq!(s.total_wait_time, 95);  // 35 + 60
+    assert_eq!(s.total_wait_time, 95); // 35 + 60
     assert_eq!(s.avg_wait_time(), Some(95.0 / 2.0));
 }
 
@@ -305,32 +305,25 @@ fn event_sequence_replay_with_stats_snapshots() {
         (
             (10, Event::ResourceRequested(0, 1)),
             |s: &simple_queue::ResourceStats| {
-                s.current_consumer_count == 1
-                && s.total_acquired == 1
-                && !s.has_queue()
+                s.current_consumer_count == 1 && s.total_acquired == 1 && !s.has_queue()
             },
         ),
         (
             (15, Event::ResourceRequested(0, 2)),
             |s: &simple_queue::ResourceStats| {
                 s.current_queue_length == 1
-                && s.current_active_requests == 1
-                && s.total_arrivals == 2
+                    && s.current_active_requests == 1
+                    && s.total_arrivals == 2
             },
         ),
         (
             (20, Event::ResourceRequested(0, 3)),
-            |s: &simple_queue::ResourceStats| {
-                s.current_queue_length == 2
-                && s.total_arrivals == 3
-            },
+            |s: &simple_queue::ResourceStats| s.current_queue_length == 2 && s.total_arrivals == 3,
         ),
         (
             (30, Event::ResourceRequestExpired(0, 2, 15)),
             |s: &simple_queue::ResourceStats| {
-                s.total_expired == 1
-                && s.total_wait_time == 15
-                && s.current_queue_length == 2  // Still in queue
+                s.total_expired == 1 && s.total_wait_time == 15 && s.current_queue_length == 2 // Still in queue
             },
         ),
         (
@@ -338,7 +331,7 @@ fn event_sequence_replay_with_stats_snapshots() {
             |s: &simple_queue::ResourceStats| {
                 s.total_released == 1
                 && s.current_queue_length == 0  // Consumer 3 acquired
-                && s.total_acquired == 2  // Consumer 1 and 3
+                && s.total_acquired == 2 // Consumer 1 and 3
             },
         ),
     ];
@@ -350,7 +343,8 @@ fn event_sequence_replay_with_stats_snapshots() {
         assert!(
             predicate(stats),
             "Stats predicate failed at t={} for event {:?}",
-            t, event
+            t,
+            event
         );
     }
 }
@@ -425,14 +419,14 @@ fn complete_test_using_only_stats_interface() {
 
     // Scenario: Multiple consumers competing for limited resource
     let events = vec![
-        Event::ResourceRequested(0, 1),  // t=10
-        Event::ResourceRequested(0, 2),  // t=15
-        Event::ResourceRequested(0, 3),  // t=20 (queued)
-        Event::ResourceRequested(0, 4),  // t=25 (queued)
-        Event::ResourceRequestExpired(0, 3, 20),  // t=30 (expires)
-        Event::ResourceReleased(0, 1, 10),  // t=40 (c4 acquires)
-        Event::ResourceReleased(0, 2, 15),  // t=50
-        Event::ResourceReleased(0, 4, 30),  // t=60
+        Event::ResourceRequested(0, 1),          // t=10
+        Event::ResourceRequested(0, 2),          // t=15
+        Event::ResourceRequested(0, 3),          // t=20 (queued)
+        Event::ResourceRequested(0, 4),          // t=25 (queued)
+        Event::ResourceRequestExpired(0, 3, 20), // t=30 (expires)
+        Event::ResourceReleased(0, 1, 10),       // t=40 (c4 acquires)
+        Event::ResourceReleased(0, 2, 15),       // t=50
+        Event::ResourceReleased(0, 4, 30),       // t=60
     ];
 
     let times = vec![10, 15, 20, 25, 30, 40, 50, 60];
@@ -446,8 +440,8 @@ fn complete_test_using_only_stats_interface() {
 
     // All consumers processed
     assert_eq!(final_stats.total_arrivals, 4);
-    assert_eq!(final_stats.total_acquired, 3);  // 1, 2, 4 (3 expired)
-    assert_eq!(final_stats.total_expired, 1);   // Consumer 3
+    assert_eq!(final_stats.total_acquired, 3); // 1, 2, 4 (3 expired)
+    assert_eq!(final_stats.total_expired, 1); // Consumer 3
     assert_eq!(final_stats.total_released, 3);
 
     // Resource is idle

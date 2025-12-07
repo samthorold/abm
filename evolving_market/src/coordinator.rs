@@ -1,5 +1,5 @@
-use crate::*;
 use crate::agents::{BuyerAgent, SellerAgent};
+use crate::*;
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -55,7 +55,7 @@ impl MarketCoordinator {
         for (buyer_id, seller_id) in &self.buyer_choices {
             self.queues
                 .entry(*seller_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(*buyer_id);
         }
     }
@@ -129,10 +129,11 @@ impl MarketCoordinator {
             // Process queue using loyalty-weighted selection
             while !remaining_queue.is_empty() && seller.stock > 0 {
                 // Select next buyer based on loyalty and beta
-                let buyer_id = match self.select_next_customer(&remaining_queue, seller_id, seller.beta) {
-                    Some(id) => id,
-                    None => break,
-                };
+                let buyer_id =
+                    match self.select_next_customer(&remaining_queue, seller_id, seller.beta) {
+                        Some(id) => id,
+                        None => break,
+                    };
 
                 // Remove selected buyer from queue
                 remaining_queue.retain(|&id| id != buyer_id);
@@ -333,4 +334,3 @@ mod tests {
         );
     }
 }
-

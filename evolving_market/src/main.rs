@@ -1,6 +1,6 @@
 use evolving_market::agents::{BuyerAgent, SellerAgent};
 use evolving_market::coordinator::MarketCoordinator;
-use evolving_market::{BuyerType, Session, loyalty_concentration};
+use evolving_market::{loyalty_concentration, BuyerType, Session};
 use rand::{Rng, SeedableRng};
 use std::fs::File;
 use std::io::Write as _;
@@ -38,7 +38,10 @@ fn main() {
     println!("Evolving Market Structure - Heterogeneous Buyers Model");
     println!("========================================================");
     println!("Configuration:");
-    println!("  Buyers: {} (33% Low/34% Medium/33% High valuation)", N_BUYERS);
+    println!(
+        "  Buyers: {} (33% Low/34% Medium/33% High valuation)",
+        N_BUYERS
+    );
     println!("  Sellers: {}", N_SELLERS);
     println!("  Days: {}", N_DAYS);
     println!("  Buyer valuations: Low=12, Medium=15, High=18");
@@ -104,12 +107,8 @@ fn main() {
         coordinator.form_queues();
 
         // Phase 4: Process queues (sellers offer prices, buyers respond)
-        let _transaction_events = coordinator.process_queues(
-            &mut sellers,
-            &mut buyers,
-            day,
-            Session::Morning,
-        );
+        let _transaction_events =
+            coordinator.process_queues(&mut sellers, &mut buyers, day, Session::Morning);
 
         // Phase 5: Update learning (both buyers and sellers)
         for buyer in &mut buyers {
@@ -139,12 +138,24 @@ fn main() {
 
         // Per-type statistics
         let compute_type_stats = |buyer_type: BuyerType| {
-            let type_buyers: Vec<_> = buyers.iter().filter(|b| b.buyer_type == buyer_type).collect();
+            let type_buyers: Vec<_> = buyers
+                .iter()
+                .filter(|b| b.buyer_type == buyer_type)
+                .collect();
             let type_prices: Vec<usize> = type_buyers
                 .iter()
-                .filter_map(|b| if b.transaction_completed { b.price_offered } else { None })
+                .filter_map(|b| {
+                    if b.transaction_completed {
+                        b.price_offered
+                    } else {
+                        None
+                    }
+                })
                 .collect();
-            let type_trans = type_buyers.iter().filter(|b| b.transaction_completed).count();
+            let type_trans = type_buyers
+                .iter()
+                .filter(|b| b.transaction_completed)
+                .count();
             let avg_price = if !type_prices.is_empty() {
                 type_prices.iter().sum::<usize>() as f64 / type_prices.len() as f64
             } else {
@@ -197,7 +208,8 @@ fn main() {
         // Print progress every 100 days
         if (day + 1) % 100 == 0 {
             // Calculate average beta across sellers
-            let avg_beta = sellers.iter().map(|s| s.beta as f64).sum::<f64>() / sellers.len() as f64;
+            let avg_beta =
+                sellers.iter().map(|s| s.beta as f64).sum::<f64>() / sellers.len() as f64;
 
             println!(
                 "Day {}: avg_price={:.2}, loyalty={:.3}, β={:.1} | Prices: L={:.2} M={:.2} H={:.2} | Trans: L={:.0}% M={:.0}% H={:.0}%",
@@ -223,10 +235,16 @@ fn main() {
     let final_stats = daily_stats.last().unwrap();
     println!("\nFinal Statistics (Day {}):", N_DAYS);
     println!("  Average price: {:.2}", final_stats.avg_price);
-    println!("  Price range: {} - {}", final_stats.min_price, final_stats.max_price);
+    println!(
+        "  Price range: {} - {}",
+        final_stats.min_price, final_stats.max_price
+    );
     println!("  Transactions: {}", final_stats.n_transactions);
     println!("  Denied service: {}", final_stats.n_denied);
-    println!("  Average loyalty concentration: {:.3}", final_stats.avg_loyalty_concentration);
+    println!(
+        "  Average loyalty concentration: {:.3}",
+        final_stats.avg_loyalty_concentration
+    );
 
     // Compute loyalty distribution
     let concentrations: Vec<f64> = (0..N_BUYERS)
@@ -234,21 +252,45 @@ fn main() {
         .collect();
 
     let high_loyalty = concentrations.iter().filter(|&&c| c > 0.9).count();
-    let medium_loyalty = concentrations.iter().filter(|&&c| c > 0.6 && c <= 0.9).count();
+    let medium_loyalty = concentrations
+        .iter()
+        .filter(|&&c| c > 0.6 && c <= 0.9)
+        .count();
     let low_loyalty = concentrations.iter().filter(|&&c| c <= 0.6).count();
 
     println!("\nLoyalty Distribution:");
-    println!("  High (γ > 0.9): {} buyers ({:.1}%)", high_loyalty, 100.0 * high_loyalty as f64 / N_BUYERS as f64);
-    println!("  Medium (0.6 < γ ≤ 0.9): {} buyers ({:.1}%)", medium_loyalty, 100.0 * medium_loyalty as f64 / N_BUYERS as f64);
-    println!("  Low (γ ≤ 0.6): {} buyers ({:.1}%)", low_loyalty, 100.0 * low_loyalty as f64 / N_BUYERS as f64);
+    println!(
+        "  High (γ > 0.9): {} buyers ({:.1}%)",
+        high_loyalty,
+        100.0 * high_loyalty as f64 / N_BUYERS as f64
+    );
+    println!(
+        "  Medium (0.6 < γ ≤ 0.9): {} buyers ({:.1}%)",
+        medium_loyalty,
+        100.0 * medium_loyalty as f64 / N_BUYERS as f64
+    );
+    println!(
+        "  Low (γ ≤ 0.6): {} buyers ({:.1}%)",
+        low_loyalty,
+        100.0 * low_loyalty as f64 / N_BUYERS as f64
+    );
 
     println!("\nPrice Discrimination by Buyer Type:");
-    println!("  Low valuation  (p_out=12): avg price={:.2}, trans rate={:.0}%",
-        final_stats.avg_price_low, final_stats.trans_rate_low * 100.0);
-    println!("  Medium valuation (p_out=15): avg price={:.2}, trans rate={:.0}%",
-        final_stats.avg_price_medium, final_stats.trans_rate_medium * 100.0);
-    println!("  High valuation (p_out=18): avg price={:.2}, trans rate={:.0}%",
-        final_stats.avg_price_high, final_stats.trans_rate_high * 100.0);
+    println!(
+        "  Low valuation  (p_out=12): avg price={:.2}, trans rate={:.0}%",
+        final_stats.avg_price_low,
+        final_stats.trans_rate_low * 100.0
+    );
+    println!(
+        "  Medium valuation (p_out=15): avg price={:.2}, trans rate={:.0}%",
+        final_stats.avg_price_medium,
+        final_stats.trans_rate_medium * 100.0
+    );
+    println!(
+        "  High valuation (p_out=18): avg price={:.2}, trans rate={:.0}%",
+        final_stats.avg_price_high,
+        final_stats.trans_rate_high * 100.0
+    );
 
     let price_spread = final_stats.avg_price_high - final_stats.avg_price_low;
     println!("\nPrice Spread (High - Low): {:.2}", price_spread);
@@ -272,10 +314,19 @@ fn write_csv(stats: &[DayStats]) -> std::io::Result<()> {
         writeln!(
             file,
             "{},{:.2},{},{},{},{},{:.4},{:.2},{:.2},{:.2},{:.3},{:.3},{:.3}",
-            s.day, s.avg_price, s.min_price, s.max_price, s.n_transactions, s.n_denied,
+            s.day,
+            s.avg_price,
+            s.min_price,
+            s.max_price,
+            s.n_transactions,
+            s.n_denied,
             s.avg_loyalty_concentration,
-            s.avg_price_low, s.avg_price_medium, s.avg_price_high,
-            s.trans_rate_low, s.trans_rate_medium, s.trans_rate_high
+            s.avg_price_low,
+            s.avg_price_medium,
+            s.avg_price_high,
+            s.trans_rate_low,
+            s.trans_rate_medium,
+            s.trans_rate_high
         )?;
     }
 

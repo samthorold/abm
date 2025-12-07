@@ -6,7 +6,7 @@ use des::{Agent, Response};
 pub struct BuyerAgent {
     pub id: usize,
     pub buyer_type: BuyerType, // Low, Medium, or High valuation
-    pub p_out: usize, // Resale price (value of good) - derived from buyer_type
+    pub p_out: usize,          // Resale price (value of good) - derived from buyer_type
 
     // Classifier systems
     seller_choice_rules: Vec<Rule<(), usize>>, // Unconditional rules, action = seller_id
@@ -28,7 +28,13 @@ pub struct BuyerAgent {
 }
 
 impl BuyerAgent {
-    pub fn new(id: usize, buyer_type: BuyerType, n_sellers: usize, max_price: usize, seed: u64) -> Self {
+    pub fn new(
+        id: usize,
+        buyer_type: BuyerType,
+        n_sellers: usize,
+        max_price: usize,
+        seed: u64,
+    ) -> Self {
         use rand::SeedableRng;
 
         let p_out = buyer_type.valuation();
@@ -41,7 +47,7 @@ impl BuyerAgent {
         // Initialize price acceptance rules (one for each price × {accept, reject})
         let mut price_acceptance_rules = Vec::new();
         for price in 0..=max_price {
-            price_acceptance_rules.push(Rule::new(price, true));  // Accept
+            price_acceptance_rules.push(Rule::new(price, true)); // Accept
             price_acceptance_rules.push(Rule::new(price, false)); // Reject
         }
 
@@ -74,7 +80,8 @@ impl BuyerAgent {
         self.price_offered = Some(price);
 
         // Find applicable rules for this price
-        let applicable: Vec<(usize, &Rule<usize, bool>)> = self.price_acceptance_rules
+        let applicable: Vec<(usize, &Rule<usize, bool>)> = self
+            .price_acceptance_rules
             .iter()
             .enumerate()
             .filter(|(_, rule)| rule.condition == price)
@@ -169,10 +176,13 @@ impl Agent<MarketEvent, MarketStats> for BuyerAgent {
                 self.visited_seller = Some(seller_id);
 
                 // Emit event indicating choice (will be handled by MarketCoordinator)
-                Response::event(current_t + 1, MarketEvent::ProcessQueues {
-                    day: *day,
-                    session: *session
-                })
+                Response::event(
+                    current_t + 1,
+                    MarketEvent::ProcessQueues {
+                        day: *day,
+                        session: *session,
+                    },
+                )
             }
 
             MarketEvent::Transaction {
@@ -242,24 +252,18 @@ pub struct SellerAgent {
     // Daily state
     current_day: usize,
     queue: Vec<usize>, // Buyer IDs in queue
-    pub beta: i32, // Current queue handling parameter
+    pub beta: i32,     // Current queue handling parameter
 
     // Track rule usage for learning
     price_rule_usage: Vec<(usize, usize)>, // (times_used, total_revenue) parallel to price_rules
-    active_beta_rule: Option<usize>, // Which beta rule is being used today
+    active_beta_rule: Option<usize>,       // Which beta rule is being used today
 
     // RNG
     rng: rand::rngs::StdRng,
 }
 
 impl SellerAgent {
-    pub fn new(
-        id: usize,
-        p_in: usize,
-        initial_stock: usize,
-        max_price: usize,
-        seed: u64,
-    ) -> Self {
+    pub fn new(id: usize, p_in: usize, initial_stock: usize, max_price: usize, seed: u64) -> Self {
         use rand::SeedableRng;
 
         // Initialize conditional pricing rules
@@ -267,7 +271,11 @@ impl SellerAgent {
         let mut price_rules = Vec::new();
 
         for loyalty in [LoyaltyClass::Low, LoyaltyClass::Medium, LoyaltyClass::High] {
-            for stock_queue in [StockQueueRatio::Low, StockQueueRatio::Medium, StockQueueRatio::High] {
+            for stock_queue in [
+                StockQueueRatio::Low,
+                StockQueueRatio::Medium,
+                StockQueueRatio::High,
+            ] {
                 for price in 0..=max_price {
                     let condition = PricingCondition::new(loyalty, stock_queue);
                     price_rules.push(Rule::new(condition, price));
@@ -348,7 +356,6 @@ impl SellerAgent {
 
     /// Update pricing rule strengths based on revenue (pub for main loop)
     pub fn update_strengths(&mut self, learning_rate: f64, max_price: usize) {
-
         // Update each pricing rule based on its actual usage and performance
         for (idx, rule) in self.price_rules.iter_mut().enumerate() {
             let (times_used, total_revenue) = self.price_rule_usage[idx];
@@ -395,7 +402,11 @@ impl SellerAgent {
 }
 
 impl Agent<MarketEvent, MarketStats> for SellerAgent {
-    fn act(&mut self, _current_t: usize, event: &MarketEvent) -> Response<MarketEvent, MarketStats> {
+    fn act(
+        &mut self,
+        _current_t: usize,
+        event: &MarketEvent,
+    ) -> Response<MarketEvent, MarketStats> {
         match event {
             MarketEvent::SessionStart { day, .. } => {
                 self.current_day = *day;
@@ -407,7 +418,7 @@ impl Agent<MarketEvent, MarketStats> for SellerAgent {
                 Response::new()
             }
 
-            MarketEvent::ProcessQueues { day, session } => {
+            MarketEvent::ProcessQueues { day: _, session: _ } => {
                 // This is where we would process our queue
                 // For now, emit transaction events for buyers in queue
                 // Note: The actual queue will be managed by MarketCoordinator
@@ -482,7 +493,6 @@ mod tests {
         // Note: Due to stochasticity this might not always hold, but directionally should trend this way
         if !low_accepts_final && med_accepts_final {
             // This is the expected outcome
-            assert!(true);
         }
     }
 
@@ -510,13 +520,13 @@ mod tests {
         let reject_rule_idx = buyer
             .price_acceptance_rules
             .iter()
-            .position(|r| r.condition == 20 && r.action == false)
+            .position(|r| r.condition == 20 && !r.action)
             .unwrap();
 
         let accept_rule_idx = buyer
             .price_acceptance_rules
             .iter()
-            .position(|r| r.condition == 20 && r.action == true)
+            .position(|r| r.condition == 20 && r.action)
             .unwrap();
 
         // Reject rule should be stronger than accept rule
@@ -549,13 +559,13 @@ mod tests {
         let accept_rule_idx = buyer
             .price_acceptance_rules
             .iter()
-            .position(|r| r.condition == 10 && r.action == true)
+            .position(|r| r.condition == 10 && r.action)
             .unwrap();
 
         let reject_rule_idx = buyer
             .price_acceptance_rules
             .iter()
-            .position(|r| r.condition == 10 && r.action == false)
+            .position(|r| r.condition == 10 && !r.action)
             .unwrap();
 
         // Accept rule should be stronger than reject rule for good prices
@@ -599,7 +609,7 @@ mod tests {
         seller.record_price_offer(high_price_idx, true, 15);
         seller.record_price_offer(low_price_idx, false, 5);
 
-        let strength_before_high = seller.price_rules[high_price_idx].strength;
+        let _strength_before_high = seller.price_rules[high_price_idx].strength;
         let strength_before_low = seller.price_rules[low_price_idx].strength;
 
         // Update strengths
@@ -690,7 +700,10 @@ mod tests {
             .filter(|r| r.condition == condition && r.action != 12)
             .collect();
 
-        assert!(!price_12_rules.is_empty(), "Should have price 12 rule for this condition");
+        assert!(
+            !price_12_rules.is_empty(),
+            "Should have price 12 rule for this condition"
+        );
 
         let price_12_strength = price_12_rules[0].strength;
         let max_other_strength = other_rules
