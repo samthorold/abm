@@ -137,8 +137,12 @@ impl MarketCoordinator {
                 // Remove selected buyer from queue
                 remaining_queue.retain(|&id| id != buyer_id);
 
-                // Seller chooses price
-                let (price, rule_idx) = seller.choose_price();
+                // Get buyer's loyalty to this seller
+                let buyer_loyalty = self.loyalty[buyer_id][seller_id];
+                let queue_length = remaining_queue.len() + 1; // +1 for current buyer
+
+                // Seller chooses price based on buyer loyalty and queue state
+                let (price, rule_idx) = seller.choose_price(buyer_loyalty, queue_length);
 
                 // Buyer responds
                 let buyer = &mut buyers[buyer_id];

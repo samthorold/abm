@@ -279,6 +279,23 @@ impl StockQueueRatio {
     }
 }
 
+/// Pricing condition: combination of customer loyalty and market state
+/// Sellers use this to condition their pricing decisions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PricingCondition {
+    pub loyalty: LoyaltyClass,
+    pub stock_queue: StockQueueRatio,
+}
+
+impl PricingCondition {
+    pub fn new(loyalty: LoyaltyClass, stock_queue: StockQueueRatio) -> Self {
+        PricingCondition {
+            loyalty,
+            stock_queue,
+        }
+    }
+}
+
 /// Compute loyalty concentration metric γ for a buyer
 /// γ = Σ(L_ij²) / (ΣL_ij)²
 /// γ=1 means perfect loyalty to one seller

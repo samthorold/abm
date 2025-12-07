@@ -195,8 +195,7 @@ impl Agent<MarketEvent, MarketStats> for BuyerAgent {
             }
 
             MarketEvent::DayEnd { .. } => {
-                // Update learning
-                self.update_strengths(0.05);
+                // Learning updated in main loop now
                 self.reset_daily_state();
                 Response::new()
             }
@@ -225,15 +224,14 @@ impl Agent<MarketEvent, MarketStats> for BuyerAgent {
     }
 }
 
-/// Seller agent for the minimal model
-/// Decisions: (1) Pricing (simplified: unconditional pricing rules)
-/// For minimal model: Fixed supply
+/// Seller agent with conditional pricing
+/// Decisions: (1) Conditional pricing (based on loyalty × stock/queue), (2) Queue handling β
 pub struct SellerAgent {
     pub id: usize,
     pub p_in: usize, // Purchase price for supply
 
     // Classifier systems
-    price_rules: Vec<Rule<(), usize>>, // Unconditional pricing rules, action = price
+    price_rules: Vec<Rule<PricingCondition, usize>>, // Conditional pricing rules
     beta_rules: Vec<Rule<(), i32>>, // Queue handling parameter: -25 to +25 in steps of 5
 
     // Stock and revenue tracking (pub for coordinator access)
@@ -264,12 +262,20 @@ impl SellerAgent {
     ) -> Self {
         use rand::SeedableRng;
 
-        // Initialize pricing rules (one per possible price, unconditional)
-        let price_rules: Vec<_> = (0..=max_price)
-            .map(|price| Rule::new((), price))
-            .collect();
+        // Initialize conditional pricing rules
+        // For each combination of (loyalty class, stock/queue ratio, price)
+        let mut price_rules = Vec::new();
 
-        let n_rules = price_rules.len();
+        for loyalty in [LoyaltyClass::Low, LoyaltyClass::Medium, LoyaltyClass::High] {
+            for stock_queue in [StockQueueRatio::Low, StockQueueRatio::Medium, StockQueueRatio::High] {
+                for price in 0..=max_price {
+                    let condition = PricingCondition::new(loyalty, stock_queue);
+                    price_rules.push(Rule::new(condition, price));
+                }
+            }
+        }
+
+        let n_price_rules = price_rules.len();
 
         // Initialize beta rules: -25 to +25 in steps of 5
         let beta_rules: Vec<_> = (-25..=25)
@@ -288,18 +294,39 @@ impl SellerAgent {
             current_day: 0,
             queue: Vec::new(),
             beta: 0, // Start with neutral queue handling
-            price_rule_usage: vec![(0, 0); n_rules],
+            price_rule_usage: vec![(0, 0); n_price_rules],
             active_beta_rule: None,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
         }
     }
 
-    /// Choose a price to offer (pub for coordinator access)
+    /// Choose a price to offer based on buyer loyalty and current market state
     /// Returns (price, rule_idx) so we can track which rule was used
-    pub fn choose_price(&mut self) -> (usize, usize) {
-        let idx = stochastic_auction(&self.price_rules, 0.1, 0.025, &mut self.rng);
-        let price = self.price_rules[idx].action;
-        (price, idx)
+    pub fn choose_price(&mut self, buyer_loyalty: f64, queue_length: usize) -> (usize, usize) {
+        // Determine current condition
+        let loyalty_class = LoyaltyClass::from_value(buyer_loyalty);
+        let stock_queue_ratio = StockQueueRatio::from_values(self.stock, queue_length);
+        let condition = PricingCondition::new(loyalty_class, stock_queue_ratio);
+
+        // Find all rules matching this condition
+        let matching: Vec<(usize, &Rule<PricingCondition, usize>)> = self
+            .price_rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.condition == condition)
+            .collect();
+
+        if matching.is_empty() {
+            // Fallback: shouldn't happen, but return price=10 and idx=0
+            return (10, 0);
+        }
+
+        // Run stochastic auction among matching rules
+        let matching_rules: Vec<_> = matching.iter().map(|(_, r)| (*r).clone()).collect();
+        let local_idx = stochastic_auction(&matching_rules, 0.1, 0.025, &mut self.rng);
+        let (global_idx, rule) = matching[local_idx];
+
+        (rule.action, global_idx)
     }
 
     /// Record that a price rule was used and whether it was accepted
@@ -320,8 +347,7 @@ impl SellerAgent {
     }
 
     /// Update pricing rule strengths based on revenue (pub for main loop)
-    pub fn update_strengths(&mut self, learning_rate: f64) {
-        let max_price = self.price_rules.len() - 1;
+    pub fn update_strengths(&mut self, learning_rate: f64, max_price: usize) {
 
         // Update each pricing rule based on its actual usage and performance
         for (idx, rule) in self.price_rules.iter_mut().enumerate() {
@@ -390,8 +416,7 @@ impl Agent<MarketEvent, MarketStats> for SellerAgent {
             }
 
             MarketEvent::DayEnd { .. } => {
-                // Update learning
-                self.update_strengths(0.05);
+                // Learning updated in main loop now
                 self.reset_daily_state();
                 Response::new()
             }
@@ -545,9 +570,9 @@ mod tests {
     fn test_seller_tracks_price_rule_usage() {
         let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
 
-        // Choose price multiple times
-        let (price1, idx1) = seller.choose_price();
-        let (price2, idx2) = seller.choose_price();
+        // Choose price multiple times with some loyalty/queue context
+        let (price1, idx1) = seller.choose_price(0.5, 10);
+        let (price2, idx2) = seller.choose_price(0.3, 8);
 
         // Record outcomes: first accepted, second rejected
         seller.record_price_offer(idx1, true, price1);
@@ -578,7 +603,7 @@ mod tests {
         let strength_before_low = seller.price_rules[low_price_idx].strength;
 
         // Update strengths
-        seller.update_strengths(0.05);
+        seller.update_strengths(0.05, 20);
 
         let strength_after_high = seller.price_rules[high_price_idx].strength;
         let strength_after_low = seller.price_rules[low_price_idx].strength;
@@ -608,7 +633,7 @@ mod tests {
         let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
 
         // Use some rules
-        let (price, idx) = seller.choose_price();
+        let (price, idx) = seller.choose_price(0.5, 10);
         seller.record_price_offer(idx, true, price);
 
         // Verify usage was tracked
@@ -630,32 +655,55 @@ mod tests {
         let mut seller = SellerAgent::new(0, 9, 15, 20, 42);
 
         // Simulate many days where price 12 is always accepted, others rejected
+        // Test with medium loyalty, medium stock/queue ratio
+        let buyer_loyalty = 0.5; // Medium
+        let queue_length = 10; // Moderate queue
+
         for _ in 0..100 {
             seller.reset_daily_state();
+            seller.stock = 12; // Set stock for stock/queue ratio calculation
 
             // Simulate 10 offers per day
             for _ in 0..10 {
-                let (price, idx) = seller.choose_price();
+                let (price, idx) = seller.choose_price(buyer_loyalty, queue_length);
                 let accepted = price == 12;
                 seller.record_price_offer(idx, accepted, price);
             }
 
-            seller.update_strengths(0.05);
+            seller.update_strengths(0.05, 20);
         }
 
-        // Rule for price 12 should be strongest
-        let price_12_strength = seller.price_rules[12].strength;
-        let mut is_strongest = true;
-        for (idx, rule) in seller.price_rules.iter().enumerate() {
-            if idx != 12 && rule.strength > price_12_strength {
-                is_strongest = false;
-                break;
-            }
-        }
+        // Among rules for this condition, price 12 should be strongest
+        let loyalty_class = LoyaltyClass::from_value(buyer_loyalty);
+        let stock_queue = StockQueueRatio::from_values(seller.stock, queue_length);
+        let condition = PricingCondition::new(loyalty_class, stock_queue);
+
+        let price_12_rules: Vec<_> = seller
+            .price_rules
+            .iter()
+            .filter(|r| r.condition == condition && r.action == 12)
+            .collect();
+
+        let other_rules: Vec<_> = seller
+            .price_rules
+            .iter()
+            .filter(|r| r.condition == condition && r.action != 12)
+            .collect();
+
+        assert!(!price_12_rules.is_empty(), "Should have price 12 rule for this condition");
+
+        let price_12_strength = price_12_rules[0].strength;
+        let max_other_strength = other_rules
+            .iter()
+            .map(|r| r.strength)
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap_or(0.0);
 
         assert!(
-            is_strongest,
-            "Price 12 rule should be strongest after consistent acceptance"
+            price_12_strength > max_other_strength,
+            "Price 12 rule should be strongest for this condition (12: {}, others: {})",
+            price_12_strength,
+            max_other_strength
         );
     }
 }

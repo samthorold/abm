@@ -116,7 +116,7 @@ fn main() {
             buyer.update_strengths(LEARNING_RATE);
         }
         for seller in &mut sellers {
-            seller.update_strengths(LEARNING_RATE);
+            seller.update_strengths(LEARNING_RATE, MAX_PRICE);
         }
 
         // Phase 6: Update loyalty
