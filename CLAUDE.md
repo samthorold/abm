@@ -130,6 +130,129 @@ When translating research papers:
 - **Stats collection**: Call `event_loop.stats()` after `run()` to get `Vec<S>` from all agents
 - **Broadcast semantics**: All agents receive all events; agents filter by relevance (see Resource/ConsumerProcess pattern)
 
+## Testing Philosophy: Stats as Observable State
+
+### Event Sourcing Paradigm
+
+This codebase follows an event sourcing approach where:
+- **Events** are the source of truth (what happened)
+- **Agent state** is private implementation detail (how it's tracked internally)
+- **Stats** is the public observable interface (what can be measured)
+
+**Core principle**: If something is worth observing or testing, it belongs in Stats. If it's not in Stats, it's an implementation detail.
+
+### Designing Stats for Testability
+
+Stats should capture both **current state** and **cumulative metrics**:
+
+```rust
+pub struct ResourceStats {
+    // Configuration (for context)
+    pub resource_id: usize,
+    pub capacity: usize,
+
+    // Current state (what's happening now)
+    pub current_consumer_count: usize,
+    pub current_queue_length: usize,
+
+    // Cumulative metrics (what's happened overall)
+    pub total_arrivals: usize,
+    pub total_acquired: usize,
+    pub total_expired: usize,
+
+    // Time aggregates
+    pub total_wait_time: usize,
+    pub total_consume_time: usize,
+}
+
+impl ResourceStats {
+    // Semantic query methods make tests readable
+    pub fn is_at_capacity(&self) -> bool {
+        self.current_consumer_count >= self.capacity
+    }
+
+    pub fn utilization(&self) -> f64 {
+        if self.capacity == 0 { return 0.0; }
+        self.current_consumer_count as f64 / self.capacity as f64
+    }
+}
+```
+
+The `stats()` method acts as a **projection** from private state to public observable state:
+
+```rust
+fn stats(&self) -> Stats {
+    let mut stats = self.stats.clone();
+    // Populate current state from private fields
+    stats.current_consumer_count = self.consumer_count;
+    stats.current_queue_length = self.consumer_queue.len();
+    Stats::ResourceStats(stats)
+}
+```
+
+### Testing Through Stats
+
+Tests verify agent behavior using only the Stats interface, maintaining proper encapsulation:
+
+```rust
+#[test]
+fn given_full_resource_when_consumer_requests_then_queued() {
+    // GIVEN: Resource at capacity
+    let mut resource = Resource::new(0, 1);
+    resource.act(10, &Event::ResourceRequested(0, 1));
+
+    let s = resource.stats();
+    assert!(s.is_at_capacity());
+
+    // WHEN: Another consumer requests
+    resource.act(15, &Event::ResourceRequested(0, 2));
+
+    // THEN: Consumer queued (verified via Stats)
+    let s = resource.stats();
+    assert_eq!(s.current_queue_length, 1);
+    assert_eq!(s.total_arrivals, 2);
+}
+```
+
+This approach:
+- Maintains encapsulation (agent internals remain private)
+- Aligns with event sourcing (Stats = projection of event stream)
+- Enables refactoring (can change internal data structures without breaking tests)
+- Documents observable behavior (Stats shows what the simulation measures)
+
+### Why This Matters for Research
+
+Research papers describe **observable behavior**, not implementation details. By testing through Stats:
+
+1. **Validation**: Verify your implementation matches the paper's observable dynamics
+2. **Replication**: Others can verify behavior without knowing internals
+3. **Refactoring safety**: Free to optimize implementation while preserving behavior
+4. **Documentation**: Stats structure documents what the model measures
+
+Example: A paper describes "queue length stabilizes under constant load" - you can test this directly via `stats.current_queue_length` without knowing whether the queue is implemented as a `VecDeque`, `Vec`, or custom structure.
+
+### Deterministic Testing
+
+For reproducible tests, agent constructors should support seeded RNGs:
+
+```rust
+impl ConsumerProcess {
+    #[cfg(test)]
+    pub fn new_with_seed(
+        resource_id: usize,
+        seed: u64,
+        /* ... parameters ... */
+    ) -> Self {
+        ConsumerProcess {
+            rng: StdRng::seed_from_u64(seed),
+            /* ... */
+        }
+    }
+}
+```
+
+This enables testing stochastic behavior deterministically.
+
 ## Target Papers for Recreation
 
 From README.md research list:
