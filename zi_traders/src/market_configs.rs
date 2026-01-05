@@ -340,8 +340,8 @@ mod tests {
         let all_costs: Vec<usize> = m.seller_costs.iter().flatten().copied().collect();
 
         // Count units within ±5 of equilibrium price
-        let marginal_values = all_values.iter().filter(|&&v| v >= 126 && v <= 136).count();
-        let marginal_costs = all_costs.iter().filter(|&&c| c >= 126 && c <= 136).count();
+        let marginal_values = all_values.iter().filter(|&&v| (126..=136).contains(&v)).count();
+        let marginal_costs = all_costs.iter().filter(|&&c| (126..=136).contains(&c)).count();
 
         assert!(
             marginal_values >= 10,

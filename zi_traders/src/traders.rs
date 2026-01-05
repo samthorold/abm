@@ -475,7 +475,7 @@ mod tests {
                 value_or_cost: unit_value,
             });
             assert!(
-                price >= PRICE_MIN && price <= 2,
+                (PRICE_MIN..=2).contains(&price),
                 "Buyer with value=2 should bid in [1, 2], got {}",
                 price
             );
@@ -494,7 +494,7 @@ mod tests {
                 value_or_cost: unit_cost,
             });
             assert!(
-                price >= 199 && price <= PRICE_MAX,
+                (199..=PRICE_MAX).contains(&price),
                 "Seller with cost=199 should ask in [199, 200], got {}",
                 price
             );
