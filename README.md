@@ -16,6 +16,10 @@ cargo run --release -p evolution_coop --bin evolutionary_takeover  # Finding C: 
 # Evolving Market Structure (Kirman & Vriend, 2001)
 cargo run -p evolving_market                              # Price dispersion and loyalty emergence
 
+# Zero-Intelligence Traders (Gode & Sunder, 1993)
+cargo run -p zi_traders                                   # Allocative efficiency comparison (ZI-U vs ZI-C)
+cargo run -p zi_traders --bin iteration_experiment        # Test iteration count sensitivity
+
 # Run tests
 cargo test
 ```
@@ -326,6 +330,156 @@ cargo run -p evolving_market
 
 ---
 
+### Allocative Efficiency of Zero-Intelligence Traders (Gode & Sunder, 1993) ✅
+
+Implementation of Gode & Sunder's groundbreaking demonstration that market institutions alone can generate high allocative efficiency, even when traders behave randomly within budget constraints.
+
+#### Theoretical Background
+
+**The Rationality Puzzle**: Standard economic theory attributes market efficiency to intelligent, profit-maximizing agents. But how much of observed market efficiency comes from trader intelligence versus the market mechanism itself?
+
+**Experimental Setup**: Continuous double auction (CDA) market where:
+- 12 traders (6 buyers, 6 sellers) trade units with private values/costs
+- Each trader receives multiple units with different redemption values (buyers) or costs (sellers)
+- Best bid and best ask displayed; transactions occur when bid ≥ ask at earlier order's price
+- Trading continues until market exhaustion or time limit
+
+**Key Innovation**: Two types of zero-intelligence traders:
+
+1. **ZI-U (Unconstrained)**: Submit random bids/asks uniformly over [1, 200]
+   - No learning, memory, or profit-seeking
+   - Can and will make losing trades
+
+2. **ZI-C (Constrained)**: Submit random bids/asks respecting budget constraint
+   - Buyers: bid uniformly in [1, value]
+   - Sellers: ask uniformly in [cost, 200]
+   - **Cannot make losing trades** (the critical constraint)
+
+**Central Finding**: ZI-C achieves 97-100% allocative efficiency across diverse market structures, approaching human trader performance, while ZI-U efficiency varies widely (48-90%).
+
+#### Implementation Features
+
+**Market Configurations** (5 markets from the paper):
+```
+Market 1: Equilibrium price ≈ 69, quantity = 15 (standard design)
+Market 2: Equilibrium price ≈ 69, quantity = 15 (different curve shapes)
+Market 3: Equilibrium price ≈ 106, quantity = 6 (thin market)
+Market 4: Equilibrium price ≈ 170, quantity = 15 (high price equilibrium)
+Market 5: Equilibrium price ≈ 131, quantity = 24 (many marginal units)
+```
+
+**Mechanisms Implemented**:
+
+1. **Continuous Double Auction**: Order book with best bid/ask, immediate execution when prices cross
+   ```rust
+   // Price priority: transaction at earlier order's price
+   if new_bid >= best_ask { execute_at(best_ask.price) }
+   if new_ask <= best_bid { execute_at(best_bid.price) }
+   ```
+
+2. **Sequential Unit Trading**: Traders must complete unit i before trading unit i+1 (creates demand/supply curves)
+
+3. **Random Trader Selection**: Each iteration randomly selects a trader with remaining units to submit an order
+
+4. **Allocative Efficiency Metric**:
+   ```rust
+   efficiency = (actual_surplus / max_possible_surplus) * 100%
+   actual_surplus = Σ(buyer_value - price) + Σ(price - seller_cost)
+   ```
+
+**Expected Results**:
+
+| Trader Type | Efficiency Range | Price Convergence | Market Sensitivity |
+|-------------|------------------|-------------------|-------------------|
+| ZI-U | 48% - 90% | None (random walk) | High variance across markets |
+| ZI-C | 97% - 100% | Within-period (p<0.05) | Stable across markets |
+| Human | 90% - 100% | Rapid then stable | Low variance |
+
+**Key Predictions Validated**:
+- ZI-C efficiency ≥ 97% across all five markets
+- ZI-C vs ZI-U gap ≥ 10 percentage points
+- ZI-C shows significant negative price convergence slope
+- ZI-U shows no convergence (slope ≈ 0)
+
+**Run the simulation**:
+```bash
+# Run standard 100-session experiment across all 5 markets
+cargo run -p zi_traders
+
+# Test iteration count sensitivity (Markets 1, 3, 5)
+cargo run -p zi_traders --bin iteration_experiment
+```
+
+#### Implementation Architecture
+
+**Module**: `zi_traders/`
+
+**Event-Driven Design**:
+```rust
+enum Event {
+    PeriodStart { period, market_id },
+    OrderRequest { period, trader_id, iteration },
+    OrderSubmitted { trader_id, order_type, price, value_or_cost },
+    Transaction { buyer_id, seller_id, price, ... },
+    PeriodEnd { period },
+}
+```
+
+**Agents**:
+- `ZIUTrader`: Generates random orders uniformly over [1, 200] regardless of value/cost
+- `ZICTrader`: Generates random orders constrained by value (buyers) or cost (sellers)
+- `Coordinator`: Manages order book, executes transactions, tracks efficiency metrics
+
+**Critical Implementation Details**:
+
+1. **Budget Constraint Enforcement** (zi_traders/src/traders.rs):
+   ```rust
+   // ZI-C buyers: bid ∈ [1, value]
+   let price = self.rng.gen_range(1..=unit.value_or_cost);
+
+   // ZI-C sellers: ask ∈ [cost, 200]
+   let price = self.rng.gen_range(unit.value_or_cost..=200);
+   ```
+
+2. **Transaction Execution** (zi_traders/src/coordinator.rs):
+   ```rust
+   // Price priority: use earlier order's price
+   if bid_price >= ask_price {
+       transaction_price = best_ask.price  // Ask arrived first
+   }
+   ```
+
+3. **Efficiency Calculation**:
+   ```rust
+   fn efficiency(&self) -> f64 {
+       (self.total_surplus as f64 / self.max_possible_surplus as f64) * 100.0
+   }
+   ```
+
+#### Parameters and Tuning
+
+**Standard Configuration**:
+```rust
+num_traders: 12 (6 buyers, 6 sellers)
+num_periods: 6
+max_iterations_per_period: 500  // Sufficient for market exhaustion
+num_sessions: 100  // Increase to 1000 for full replication
+price_range: [1, 200]
+```
+
+**Why These Values**:
+- **500 iterations**: Ensures all profitable trades can occur (even thin Market 3 with 6 equilibrium units)
+- **6 periods**: Matches original experimental design (though ZI traders don't learn between periods)
+- **100 sessions**: Provides statistical reliability; increase to 1000 for publication-quality results
+- **Price range [1, 200]**: Wide enough to test constraint effects without excessive computation
+
+#### Further Reading
+
+- **Paper Summary**: `/prior-art/alloc-efficiency-zi-traders.md` - Complete implementation specification with pseudocode
+- **Original Paper**: Gode, D.K. & Sunder, S. (1993). "Allocative Efficiency of Markets with Zero-Intelligence Traders: Market as a Partial Substitute for Individual Rationality." *Journal of Political Economy*, 101(1), 119-137.
+
+---
+
 ## Reading
 
 [ABMs in economics and finance (Axtell and Farmer, 2025)](https://ora.ox.ac.uk/objects/uuid:8af3b96e-a088-4e29-ba1e-0760222277b7/files/s6969z182c)
@@ -357,6 +511,7 @@ TODO: Set up custom instructions to optimize for planning and research translati
 **Completed**:
 - ✅ The Evolution of Cooperation (Axelrod & Hamilton, 1981) - All three key findings implemented
 - ✅ Kirman and Vriend (2001) - Evolving market structure with price dispersion and loyalty
+- ✅ Gode and Sunder (1993) - Zero-intelligence traders and allocative efficiency
 
 **TODO**:
 - TRANSIMS code (Barrett et al., 1995, Nagel, Beckman and Barrett, 1998)
@@ -364,5 +519,5 @@ TODO: Set up custom instructions to optimize for planning and research translati
 - policy relevant and exercised to study policy alternatives (Dawid et al., 2012)
 - Donier et al. (2015) showed that a linear virtual order book profile
 - Aymanns et al. (2016) leverage cycles
-- "zero-intelligence" (ZI) agents (Gode and Sunder, 1993, 1997)
+- Gode and Sunder (1997) - Extensions to ZI traders
 - K-level cognition (Camerer, Ho and Chong, 2004) has found use in ABMs (Latek, Kaminski and Axtell, 2009)
