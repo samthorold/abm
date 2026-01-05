@@ -269,13 +269,17 @@ mod tests {
     #[test]
     fn test_zi_c_buyer_respects_value_constraint() {
         let value = 100;
-        let units = vec![Unit { value_or_cost: value }];
+        let units = vec![Unit {
+            value_or_cost: value,
+        }];
         let mut trader = ZICTrader::new(0, Role::Buyer, units, 42);
 
         // Generate many prices - all should be <= value
         for _ in 0..1000 {
             let unit_value = trader.get_current_unit().unwrap().value_or_cost;
-            let price = trader.generate_price(&Unit { value_or_cost: unit_value });
+            let price = trader.generate_price(&Unit {
+                value_or_cost: unit_value,
+            });
             assert!(
                 price >= PRICE_MIN && price <= value,
                 "Buyer bid {} should be in range [1, {}]",
@@ -288,13 +292,17 @@ mod tests {
     #[test]
     fn test_zi_c_seller_respects_cost_constraint() {
         let cost = 100;
-        let units = vec![Unit { value_or_cost: cost }];
+        let units = vec![Unit {
+            value_or_cost: cost,
+        }];
         let mut trader = ZICTrader::new(0, Role::Seller, units, 42);
 
         // Generate many prices - all should be >= cost
         for _ in 0..1000 {
             let unit_cost = trader.get_current_unit().unwrap().value_or_cost;
-            let price = trader.generate_price(&Unit { value_or_cost: unit_cost });
+            let price = trader.generate_price(&Unit {
+                value_or_cost: unit_cost,
+            });
             assert!(
                 price >= cost && price <= PRICE_MAX,
                 "Seller ask {} should be in range [{}, 200]",
@@ -312,7 +320,9 @@ mod tests {
 
         for _ in 0..100 {
             let unit_cost = trader.get_current_unit().unwrap().value_or_cost;
-            let price = trader.generate_price(&Unit { value_or_cost: unit_cost });
+            let price = trader.generate_price(&Unit {
+                value_or_cost: unit_cost,
+            });
             assert_eq!(price, 200, "Seller with cost=200 should only ask 200");
         }
     }

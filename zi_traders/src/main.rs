@@ -135,16 +135,18 @@ fn main() {
     let num_sessions = 100; // Start with 100, can increase to 1000 for full replication
 
     for market in &markets {
-        println!("\n{} (Eq. Price: {}, Eq. Qty: {})",
-            market.name,
-            market.equilibrium_price,
-            market.equilibrium_quantity
+        println!(
+            "\n{} (Eq. Price: {}, Eq. Qty: {})",
+            market.name, market.equilibrium_price, market.equilibrium_quantity
         );
         println!("Max Surplus: {}", market.calculate_max_surplus());
         println!("{}", "=".repeat(60));
 
         for trader_type in &trader_types {
-            println!("\nRunning {} sessions with {}...", num_sessions, trader_type);
+            println!(
+                "\nRunning {} sessions with {}...",
+                num_sessions, trader_type
+            );
             let results = run_experiment(market, *trader_type, num_sessions);
             results.print_summary(&market.name, &format!("{}", trader_type));
         }

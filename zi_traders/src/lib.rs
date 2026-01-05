@@ -55,7 +55,7 @@ pub struct Order {
 /// A completed transaction
 #[derive(Debug, Clone, Copy)]
 pub struct Transaction {
-    pub sequence: usize,      // Transaction number within period
+    pub sequence: usize, // Transaction number within period
     pub buyer_id: usize,
     pub seller_id: usize,
     pub price: usize,
@@ -81,10 +81,7 @@ impl Transaction {
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Start a trading period
-    PeriodStart {
-        period: usize,
-        market_id: usize,
-    },
+    PeriodStart { period: usize, market_id: usize },
 
     /// Coordinator requests order from specific trader
     OrderRequest {
@@ -114,9 +111,7 @@ pub enum Event {
     },
 
     /// Period ends
-    PeriodEnd {
-        period: usize,
-    },
+    PeriodEnd { period: usize },
 }
 
 /// Statistics tracked by trader agents

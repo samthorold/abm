@@ -88,7 +88,10 @@ fn test_market_3_zi_c_completes_valid_trades() {
         );
     }
 
-    assert!(stats.num_transactions() > 0, "Market 3 should have some transactions");
+    assert!(
+        stats.num_transactions() > 0,
+        "Market 3 should have some transactions"
+    );
 }
 
 #[test]
@@ -97,15 +100,15 @@ fn test_market_3_zi_u_may_make_losing_trades() {
     let stats = run_test_period(&market, TraderType::ZIU, 42, 500);
 
     // ZI-U might make losing trades
-    let _has_losing_trade = stats
-        .transactions
-        .iter()
-        .any(|txn| txn.total_surplus() < 0);
+    let _has_losing_trade = stats.transactions.iter().any(|txn| txn.total_surplus() < 0);
 
     // This test is probabilistic, but with 500 iterations it should almost certainly happen
     // If it doesn't, that's actually fine - just means we got lucky
     // The important part is that the system doesn't panic or behave incorrectly
-    assert!(stats.num_transactions() > 0, "Should have some transactions");
+    assert!(
+        stats.num_transactions() > 0,
+        "Should have some transactions"
+    );
 }
 
 #[test]
@@ -222,7 +225,10 @@ fn test_market_3_low_volume_completes_without_hanging() {
     let stats = run_test_period(&market, TraderType::ZIC, 42, 100);
 
     // Just verify it completes without panic
-    assert!(stats.num_transactions() <= 12, "Market 3 has max 12 possible trades");
+    assert!(
+        stats.num_transactions() <= 12,
+        "Market 3 has max 12 possible trades"
+    );
 }
 
 #[test]

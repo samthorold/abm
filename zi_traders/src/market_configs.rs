@@ -284,7 +284,10 @@ mod tests {
         let seller_unit_count: usize = m.seller_costs.iter().map(|units| units.len()).sum();
 
         assert_eq!(buyer_unit_count, 12, "Market 3 should have 12 buyer units");
-        assert_eq!(seller_unit_count, 12, "Market 3 should have 12 seller units");
+        assert_eq!(
+            seller_unit_count, 12,
+            "Market 3 should have 12 seller units"
+        );
         assert_eq!(m.num_buyers(), 6);
         assert_eq!(m.num_sellers(), 6);
     }
@@ -298,7 +301,10 @@ mod tests {
         let seller_unit_count: usize = m.seller_costs.iter().map(|units| units.len()).sum();
 
         assert_eq!(buyer_unit_count, 36, "Market 5 should have 36 buyer units");
-        assert_eq!(seller_unit_count, 36, "Market 5 should have 36 seller units");
+        assert_eq!(
+            seller_unit_count, 36,
+            "Market 5 should have 36 seller units"
+        );
         assert_eq!(m.num_buyers(), 6);
         assert_eq!(m.num_sellers(), 6);
     }
@@ -359,10 +365,7 @@ mod tests {
             costs.sort();
 
             // Find first unprofitable pair
-            let extramarginal_exists = values
-                .iter()
-                .zip(costs.iter())
-                .any(|(v, c)| v < c);
+            let extramarginal_exists = values.iter().zip(costs.iter()).any(|(v, c)| v < c);
 
             assert!(
                 extramarginal_exists,

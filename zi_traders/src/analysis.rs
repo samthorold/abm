@@ -16,7 +16,8 @@ pub struct PeriodResults {
 
 impl PeriodResults {
     pub fn from_coordinator_stats(stats: &CoordinatorStats) -> Self {
-        let (slope, r_squared) = calculate_convergence(&stats.transactions, stats.equilibrium_price);
+        let (slope, r_squared) =
+            calculate_convergence(&stats.transactions, stats.equilibrium_price);
 
         PeriodResults {
             period: stats.period,
@@ -43,12 +44,10 @@ pub struct SessionResults {
 
 impl SessionResults {
     pub fn from_periods(session_id: usize, periods: Vec<PeriodResults>) -> Self {
-        let mean_efficiency = periods.iter().map(|p| p.efficiency).sum::<f64>() / periods.len() as f64;
+        let mean_efficiency =
+            periods.iter().map(|p| p.efficiency).sum::<f64>() / periods.len() as f64;
 
-        let slopes: Vec<f64> = periods
-            .iter()
-            .filter_map(|p| p.convergence_slope)
-            .collect();
+        let slopes: Vec<f64> = periods.iter().filter_map(|p| p.convergence_slope).collect();
         let mean_convergence_slope = if slopes.is_empty() {
             0.0
         } else {
@@ -89,12 +88,16 @@ impl AggregateResults {
         let mean_efficiency = mean(&efficiencies);
         let std_efficiency = std_dev(&efficiencies, mean_efficiency);
         let min_efficiency = efficiencies.iter().copied().fold(f64::INFINITY, f64::min);
-        let max_efficiency = efficiencies.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let max_efficiency = efficiencies
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
 
         let mean_convergence_slope = mean(&slopes);
         let std_convergence_slope = std_dev(&slopes, mean_convergence_slope);
 
-        let mean_transactions_per_session = transactions.iter().sum::<usize>() as f64 / transactions.len() as f64;
+        let mean_transactions_per_session =
+            transactions.iter().sum::<usize>() as f64 / transactions.len() as f64;
 
         AggregateResults {
             num_sessions: sessions.len(),
@@ -111,17 +114,18 @@ impl AggregateResults {
     pub fn print_summary(&self, market_name: &str, trader_type: &str) {
         println!("\n{} - {}", market_name, trader_type);
         println!("  Sessions: {}", self.num_sessions);
-        println!("  Efficiency: {:.2}% (±{:.2}%) [{:.2}%, {:.2}%]",
-            self.mean_efficiency,
-            self.std_efficiency,
-            self.min_efficiency,
-            self.max_efficiency
+        println!(
+            "  Efficiency: {:.2}% (±{:.2}%) [{:.2}%, {:.2}%]",
+            self.mean_efficiency, self.std_efficiency, self.min_efficiency, self.max_efficiency
         );
-        println!("  Convergence slope: {:.4} (±{:.4})",
-            self.mean_convergence_slope,
-            self.std_convergence_slope
+        println!(
+            "  Convergence slope: {:.4} (±{:.4})",
+            self.mean_convergence_slope, self.std_convergence_slope
         );
-        println!("  Avg transactions: {:.1}", self.mean_transactions_per_session);
+        println!(
+            "  Avg transactions: {:.1}",
+            self.mean_transactions_per_session
+        );
     }
 }
 
@@ -218,7 +222,8 @@ fn std_dev(values: &[f64], mean: f64) -> f64 {
         return 0.0;
     }
 
-    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+    let variance =
+        values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     variance.sqrt()
 }
 
@@ -270,7 +275,10 @@ mod tests {
         assert!(r_squared.is_some());
 
         // Slope should be negative (prices moving toward equilibrium)
-        assert!(slope.unwrap() < 0.0, "Slope should be negative for convergence");
+        assert!(
+            slope.unwrap() < 0.0,
+            "Slope should be negative for convergence"
+        );
 
         // R² should be high for this linear relationship
         assert!(
@@ -339,7 +347,10 @@ mod tests {
 
         let surplus = txn.total_surplus();
         // (131-131) + (131-130) = 0 + 1 = 1
-        assert_eq!(surplus, 1, "Small positive surplus should be calculated correctly");
+        assert_eq!(
+            surplus, 1,
+            "Small positive surplus should be calculated correctly"
+        );
     }
 
     #[test]

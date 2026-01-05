@@ -12,6 +12,12 @@ pub struct OrderBook {
     pub best_ask: Option<Order>,
 }
 
+impl Default for OrderBook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OrderBook {
     pub fn new() -> Self {
         OrderBook {
@@ -151,7 +157,9 @@ impl Coordinator {
                 let seller_index = trader_id - self.market_config.num_buyers();
                 self.market_config.seller_costs[seller_index]
                     .iter()
-                    .map(|&cost| Unit { value_or_cost: cost })
+                    .map(|&cost| Unit {
+                        value_or_cost: cost,
+                    })
                     .collect()
             }
         }
