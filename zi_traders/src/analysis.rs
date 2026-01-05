@@ -324,4 +324,114 @@ mod tests {
         // Sample std dev of 1,2,3,4,5 is sqrt(2.5) ≈ 1.58
         assert!((std - 1.58).abs() < 0.01);
     }
+
+    #[test]
+    fn test_surplus_calculation_with_marginal_units() {
+        // Transaction with very small surplus
+        let txn = Transaction {
+            sequence: 0,
+            buyer_id: 0,
+            seller_id: 1,
+            price: 131,
+            buyer_value: 131,
+            seller_cost: 130,
+        };
+
+        let surplus = txn.total_surplus();
+        // (131-131) + (131-130) = 0 + 1 = 1
+        assert_eq!(surplus, 1, "Small positive surplus should be calculated correctly");
+    }
+
+    #[test]
+    fn test_surplus_calculation_with_extramarginal_trade() {
+        // Welfare-destroying trade (ZI-U can make these)
+        let txn = Transaction {
+            sequence: 0,
+            buyer_id: 0,
+            seller_id: 1,
+            price: 105,
+            buyer_value: 100,
+            seller_cost: 110,
+        };
+
+        let surplus = txn.total_surplus();
+        // (100-105) + (105-110) = -5 + -5 = -10
+        assert_eq!(surplus, -10, "Negative surplus for losing trade");
+    }
+
+    #[test]
+    fn test_efficiency_when_no_transactions() {
+        use crate::CoordinatorStats;
+
+        let stats = CoordinatorStats::new(0, 1, 100, 10, 500);
+        // No transactions recorded
+        assert_eq!(stats.num_transactions(), 0);
+        assert_eq!(stats.efficiency(), 0.0);
+    }
+
+    #[test]
+    fn test_efficiency_with_partial_equilibrium() {
+        use crate::CoordinatorStats;
+
+        let mut stats = CoordinatorStats::new(0, 1, 100, 10, 500);
+
+        // Add 3 transactions with surplus of 50 each
+        for i in 0..3 {
+            stats.transactions.push(Transaction {
+                sequence: i,
+                buyer_id: 0,
+                seller_id: 1,
+                price: 100,
+                buyer_value: 125,
+                seller_cost: 75,
+            });
+            stats.total_surplus += 50;
+        }
+
+        let efficiency = stats.efficiency();
+        // 3 * 50 / 500 = 150 / 500 = 30%
+        assert!((efficiency - 30.0).abs() < 0.01);
+        assert!(efficiency > 0.0 && efficiency < 100.0);
+    }
+
+    #[test]
+    fn test_price_rmsd_with_no_transactions() {
+        use crate::CoordinatorStats;
+
+        let stats = CoordinatorStats::new(0, 1, 100, 10, 500);
+        assert_eq!(stats.price_rmsd(), 0.0);
+    }
+
+    #[test]
+    fn test_convergence_with_single_transaction() {
+        let transactions = vec![Transaction {
+            sequence: 0,
+            buyer_id: 0,
+            seller_id: 1,
+            price: 100,
+            buyer_value: 120,
+            seller_cost: 80,
+        }];
+
+        let (slope, r_squared) = calculate_convergence(&transactions, 100);
+        // Not enough data points for regression
+        assert!(slope.is_none());
+        assert!(r_squared.is_none());
+    }
+
+    #[test]
+    fn test_transaction_price_deviation() {
+        let txn = Transaction {
+            sequence: 0,
+            buyer_id: 0,
+            seller_id: 1,
+            price: 110,
+            buyer_value: 120,
+            seller_cost: 90,
+        };
+
+        assert_eq!(txn.price_deviation(100), 10);
+        assert_eq!(txn.price_deviation(110), 0);
+        assert_eq!(txn.price_deviation(120), -10);
+    }
 }

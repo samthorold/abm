@@ -448,4 +448,93 @@ mod tests {
 
         assert_eq!(txn.total_surplus(), 30); // (100-80) + (80-70) = 20 + 10 = 30
     }
+
+    #[test]
+    fn test_order_book_with_marginal_orders() {
+        let mut book = OrderBook::new();
+
+        // Orders clustered near same price (marginal units)
+        let bid = Order {
+            trader_id: 0,
+            order_type: OrderType::Bid,
+            price: 131,
+            value_or_cost: 132,
+        };
+        book.process_order(bid);
+
+        let ask = Order {
+            trader_id: 1,
+            order_type: OrderType::Ask,
+            price: 131,
+            value_or_cost: 130,
+        };
+        let result = book.process_order(ask);
+
+        assert!(result.is_some());
+        let txn = result.unwrap();
+        assert_eq!(txn.price, 131); // Should match at earlier order price
+        assert_eq!(txn.total_surplus(), 2); // (132-131) + (131-130) = 1 + 1 = 2
+    }
+
+    #[test]
+    fn test_order_book_cancels_previous_order() {
+        let mut book = OrderBook::new();
+
+        // Submit first bid
+        let bid1 = Order {
+            trader_id: 0,
+            order_type: OrderType::Bid,
+            price: 100,
+            value_or_cost: 120,
+        };
+        book.process_order(bid1);
+        assert_eq!(book.best_bid.unwrap().price, 100);
+
+        // Submit another bid (implicitly cancels first)
+        let bid2 = Order {
+            trader_id: 2,
+            order_type: OrderType::Bid,
+            price: 90,
+            value_or_cost: 110,
+        };
+        book.process_order(bid2);
+
+        // Best bid should be replaced
+        assert_eq!(book.best_bid.unwrap().price, 90);
+        assert_eq!(book.best_bid.unwrap().trader_id, 2);
+    }
+
+    #[test]
+    fn test_order_book_empty_state() {
+        let book = OrderBook::new();
+        assert!(book.best_bid.is_none());
+        assert!(book.best_ask.is_none());
+    }
+
+    #[test]
+    fn test_order_book_reset() {
+        let mut book = OrderBook::new();
+
+        // Add orders
+        book.process_order(Order {
+            trader_id: 0,
+            order_type: OrderType::Bid,
+            price: 50,
+            value_or_cost: 100,
+        });
+        book.process_order(Order {
+            trader_id: 1,
+            order_type: OrderType::Ask,
+            price: 60,
+            value_or_cost: 40,
+        });
+
+        assert!(book.best_bid.is_some());
+        assert!(book.best_ask.is_some());
+
+        // Reset should clear
+        book.reset();
+        assert!(book.best_bid.is_none());
+        assert!(book.best_ask.is_none());
+    }
 }

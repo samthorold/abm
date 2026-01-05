@@ -274,4 +274,139 @@ mod tests {
             "Market 1 equilibrium quantity should be close to calculated value"
         );
     }
+
+    #[test]
+    fn test_market_3_has_correct_unit_counts() {
+        let m = MarketConfig::market_3();
+
+        // Market 3 should be low volume: 6 buyers × 2 units each
+        let buyer_unit_count: usize = m.buyer_values.iter().map(|units| units.len()).sum();
+        let seller_unit_count: usize = m.seller_costs.iter().map(|units| units.len()).sum();
+
+        assert_eq!(buyer_unit_count, 12, "Market 3 should have 12 buyer units");
+        assert_eq!(seller_unit_count, 12, "Market 3 should have 12 seller units");
+        assert_eq!(m.num_buyers(), 6);
+        assert_eq!(m.num_sellers(), 6);
+    }
+
+    #[test]
+    fn test_market_5_has_correct_unit_counts() {
+        let m = MarketConfig::market_5();
+
+        // Market 5 should be high volume: 6 buyers × 6 units each
+        let buyer_unit_count: usize = m.buyer_values.iter().map(|units| units.len()).sum();
+        let seller_unit_count: usize = m.seller_costs.iter().map(|units| units.len()).sum();
+
+        assert_eq!(buyer_unit_count, 36, "Market 5 should have 36 buyer units");
+        assert_eq!(seller_unit_count, 36, "Market 5 should have 36 seller units");
+        assert_eq!(m.num_buyers(), 6);
+        assert_eq!(m.num_sellers(), 6);
+    }
+
+    #[test]
+    fn test_market_3_equilibrium_quantity_calculation() {
+        let m = MarketConfig::market_3();
+
+        let mut values: Vec<usize> = m.buyer_values.iter().flatten().copied().collect();
+        values.sort_by(|a, b| b.cmp(a));
+
+        let mut costs: Vec<usize> = m.seller_costs.iter().flatten().copied().collect();
+        costs.sort();
+
+        let eq_qty = values
+            .iter()
+            .zip(costs.iter())
+            .filter(|(v, c)| v >= c)
+            .count();
+
+        assert_eq!(
+            eq_qty, m.equilibrium_quantity,
+            "Market 3 calculated equilibrium should match declared (low volume market)"
+        );
+    }
+
+    #[test]
+    fn test_market_5_marginal_units_near_equilibrium() {
+        let m = MarketConfig::market_5();
+
+        // Market 5 design feature: marginal units clustered near equilibrium price (131)
+        let all_values: Vec<usize> = m.buyer_values.iter().flatten().copied().collect();
+        let all_costs: Vec<usize> = m.seller_costs.iter().flatten().copied().collect();
+
+        // Count units within ±5 of equilibrium price
+        let marginal_values = all_values.iter().filter(|&&v| v >= 126 && v <= 136).count();
+        let marginal_costs = all_costs.iter().filter(|&&c| c >= 126 && c <= 136).count();
+
+        assert!(
+            marginal_values >= 10,
+            "Market 5 should have many buyer values near equilibrium, found {}",
+            marginal_values
+        );
+        assert!(
+            marginal_costs >= 10,
+            "Market 5 should have many seller costs near equilibrium, found {}",
+            marginal_costs
+        );
+    }
+
+    #[test]
+    fn test_extramarginal_units_exist() {
+        for market in MarketConfig::all_markets() {
+            let mut values: Vec<usize> = market.buyer_values.iter().flatten().copied().collect();
+            values.sort_by(|a, b| b.cmp(a));
+
+            let mut costs: Vec<usize> = market.seller_costs.iter().flatten().copied().collect();
+            costs.sort();
+
+            // Find first unprofitable pair
+            let extramarginal_exists = values
+                .iter()
+                .zip(costs.iter())
+                .any(|(v, c)| v < c);
+
+            assert!(
+                extramarginal_exists,
+                "{} should have extramarginal units (value < cost)",
+                market.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_market_5_equilibrium_calculation() {
+        let m = MarketConfig::market_5();
+
+        let mut values: Vec<usize> = m.buyer_values.iter().flatten().copied().collect();
+        values.sort_by(|a, b| b.cmp(a));
+
+        let mut costs: Vec<usize> = m.seller_costs.iter().flatten().copied().collect();
+        costs.sort();
+
+        let eq_qty = values
+            .iter()
+            .zip(costs.iter())
+            .filter(|(v, c)| v >= c)
+            .count();
+
+        // Should be close to declared
+        let diff = (eq_qty as i32 - m.equilibrium_quantity as i32).abs();
+        assert!(
+            diff <= 2,
+            "Market 5 equilibrium quantity should match calculation, expected {}, got {}",
+            m.equilibrium_quantity,
+            eq_qty
+        );
+    }
+
+    #[test]
+    fn test_all_markets_have_equal_buyers_and_sellers() {
+        for market in MarketConfig::all_markets() {
+            assert_eq!(
+                market.num_buyers(),
+                market.num_sellers(),
+                "{} should have equal buyers and sellers",
+                market.name
+            );
+        }
+    }
 }

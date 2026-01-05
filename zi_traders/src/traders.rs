@@ -41,7 +41,9 @@ impl ZIUTrader {
 
 impl des::Agent<Event, Stats> for ZIUTrader {
     fn stats(&self) -> Stats {
-        Stats::Trader(self.stats.clone())
+        let mut stats = self.stats.clone();
+        stats.current_unit_index = self.current_unit_index;
+        Stats::Trader(stats)
     }
 
     fn act(&mut self, current_t: usize, event: &Event) -> des::Response<Event, Stats> {
@@ -164,7 +166,9 @@ impl ZICTrader {
 
 impl des::Agent<Event, Stats> for ZICTrader {
     fn stats(&self) -> Stats {
-        Stats::Trader(self.stats.clone())
+        let mut stats = self.stats.clone();
+        stats.current_unit_index = self.current_unit_index;
+        Stats::Trader(stats)
     }
 
     fn act(&mut self, current_t: usize, event: &Event) -> des::Response<Event, Stats> {
@@ -342,6 +346,178 @@ mod tests {
             assert_eq!(s.unit_profits[0], 20);
         } else {
             panic!("Expected TraderStats");
+        }
+    }
+
+    #[test]
+    fn test_trader_with_multiple_units_advances_correctly() {
+        use des::Agent;
+
+        let units = vec![
+            Unit { value_or_cost: 100 },
+            Unit { value_or_cost: 80 },
+            Unit { value_or_cost: 60 },
+        ];
+        let mut trader = ZICTrader::new(0, Role::Buyer, units, 42);
+
+        // Verify initial state
+        let stats = trader.stats();
+        if let Stats::Trader(s) = stats {
+            assert_eq!(s.current_unit_index, 0);
+            assert_eq!(s.units_total, 3);
+            assert_eq!(s.units_remaining(), 3);
+        }
+
+        // First transaction
+        trader.act(
+            0,
+            &Event::Transaction {
+                period: 1,
+                buyer_id: 0,
+                seller_id: 1,
+                price: 90,
+                buyer_value: 100,
+                seller_cost: 80,
+                sequence: 0,
+            },
+        );
+
+        let stats = trader.stats();
+        if let Stats::Trader(s) = stats {
+            assert_eq!(s.current_unit_index, 1, "Should advance to unit 1");
+            assert_eq!(s.units_traded, 1);
+            assert_eq!(s.units_remaining(), 2);
+        }
+
+        // Second transaction
+        trader.act(
+            1,
+            &Event::Transaction {
+                period: 1,
+                buyer_id: 0,
+                seller_id: 1,
+                price: 70,
+                buyer_value: 80,
+                seller_cost: 60,
+                sequence: 1,
+            },
+        );
+
+        let stats = trader.stats();
+        if let Stats::Trader(s) = stats {
+            assert_eq!(s.current_unit_index, 2, "Should advance to unit 2");
+            assert_eq!(s.units_traded, 2);
+            assert_eq!(s.units_remaining(), 1);
+        }
+    }
+
+    #[test]
+    fn test_trader_with_no_units_remaining_doesnt_respond() {
+        use des::Agent;
+
+        let units = vec![Unit { value_or_cost: 100 }];
+        let mut trader = ZICTrader::new(0, Role::Buyer, units, 42);
+
+        // Trade the only unit
+        trader.act(
+            0,
+            &Event::Transaction {
+                period: 1,
+                buyer_id: 0,
+                seller_id: 1,
+                price: 90,
+                buyer_value: 100,
+                seller_cost: 80,
+                sequence: 0,
+            },
+        );
+
+        // Verify no units remaining
+        let stats = trader.stats();
+        if let Stats::Trader(s) = stats {
+            assert!(!s.has_units_remaining());
+            assert_eq!(s.units_remaining(), 0);
+        }
+
+        // Try to get an order - should not respond
+        let response = trader.act(
+            1,
+            &Event::OrderRequest {
+                trader_id: 0,
+                period: 1,
+                iteration: 10,
+            },
+        );
+
+        // No events should be generated
+        assert_eq!(response.events.len(), 0);
+    }
+
+    #[test]
+    fn test_zi_c_buyer_with_value_near_price_min() {
+        let units = vec![Unit { value_or_cost: 2 }];
+        let mut trader = ZICTrader::new(0, Role::Buyer, units, 42);
+
+        // Can still bid despite narrow range [1, 2]
+        for _ in 0..100 {
+            let unit_value = trader.get_current_unit().unwrap().value_or_cost;
+            let price = trader.generate_price(&Unit {
+                value_or_cost: unit_value,
+            });
+            assert!(
+                price >= PRICE_MIN && price <= 2,
+                "Buyer with value=2 should bid in [1, 2], got {}",
+                price
+            );
+        }
+    }
+
+    #[test]
+    fn test_zi_c_seller_with_cost_near_price_max() {
+        let units = vec![Unit { value_or_cost: 199 }];
+        let mut trader = ZICTrader::new(0, Role::Seller, units, 42);
+
+        // Can still ask despite narrow range [199, 200]
+        for _ in 0..100 {
+            let unit_cost = trader.get_current_unit().unwrap().value_or_cost;
+            let price = trader.generate_price(&Unit {
+                value_or_cost: unit_cost,
+            });
+            assert!(
+                price >= 199 && price <= PRICE_MAX,
+                "Seller with cost=199 should ask in [199, 200], got {}",
+                price
+            );
+        }
+    }
+
+    #[test]
+    fn test_trader_ignores_other_traders_transactions() {
+        use des::Agent;
+
+        let units = vec![Unit { value_or_cost: 100 }];
+        let mut trader = ZICTrader::new(0, Role::Buyer, units, 42);
+
+        // Transaction involving other traders
+        trader.act(
+            0,
+            &Event::Transaction {
+                period: 1,
+                buyer_id: 5,
+                seller_id: 10,
+                price: 90,
+                buyer_value: 120,
+                seller_cost: 80,
+                sequence: 0,
+            },
+        );
+
+        // Trader state should be unchanged
+        let stats = trader.stats();
+        if let Stats::Trader(s) = stats {
+            assert_eq!(s.units_traded, 0);
+            assert_eq!(s.total_profit, 0);
+            assert_eq!(s.current_unit_index, 0);
         }
     }
 }
