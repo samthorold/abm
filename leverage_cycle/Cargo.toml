@@ -1,0 +1,12 @@
+[package]
+name = "leverage_cycle"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+des = { path = "../des" }
+rand = "0.9"
+rand_distr = "0.5"
+
+[dev-dependencies]
+approx = "0.5"
