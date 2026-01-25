@@ -20,6 +20,10 @@ cargo run -p evolving_market                              # Price dispersion and
 cargo run -p zi_traders                                   # Allocative efficiency comparison (ZI-U vs ZI-C)
 cargo run -p zi_traders --bin iteration_experiment        # Test iteration count sensitivity
 
+# Basel Leverage Cycle (Aymanns et al., 2016)
+cargo run -p leverage_cycle                               # Four scenarios: micro/macro × deterministic/stochastic
+cargo run -p leverage_cycle --example verify_paper_results  # Verify key paper findings
+
 # Run tests
 cargo test
 ```
@@ -480,6 +484,161 @@ price_range: [1, 200]
 
 ---
 
+### Taming the Basel Leverage Cycle (Aymanns, Caccioli, Farmer & Tan, 2016) ✅
+
+Implementation of the leverage cycle model demonstrating how Value-at-Risk (VaR) based leverage constraints, as mandated by Basel II banking regulations, can endogenously generate systemic risk through feedback effects.
+
+#### Theoretical Background
+
+**The Regulatory Paradox**: Regulations designed to make individual banks safer can, through feedback effects, create system-wide instability. Under Basel II, banks estimate their risk using historical volatility and adjust their leverage accordingly.
+
+This creates a dangerous feedback loop:
+
+1. **Rising prices** → Lower measured volatility → Higher allowed leverage → Banks buy more assets → Prices rise further
+2. **Falling prices** → Higher measured volatility → Lower allowed leverage → Banks must sell assets → Prices fall further
+
+**Three Stability Regimes**:
+
+| Regime | Characteristic | Behavior |
+|--------|---------------|----------|
+| **(i) Stable** | Low leverage, small bank | System converges to fixed point equilibrium |
+| **(ii) Leverage Cycles** | Intermediate leverage | Chaotic oscillations with 10-15 year periods |
+| **(iii) Globally Unstable** | High leverage | System diverges—prices go to infinity or zero |
+
+**The Leverage Control Policy**:
+```
+λ̄(t) = α(σ²(t) + σ₀²)^b
+```
+Where:
+- **λ̄(t)**: Target leverage at time t
+- **α**: Bank's "riskiness" parameter
+- **σ²(t)**: Perceived risk (historical volatility estimate)
+- **b**: Cyclicality parameter (b = -0.5 for Basel II/VaR)
+
+The cyclicality parameter b determines policy nature:
+- **b = -0.5**: Procyclical (Basel II) — leverage decreases when volatility increases
+- **b = 0**: Constant leverage — unchanged regardless of volatility
+- **b = +0.5**: Countercyclical — leverage increases when volatility increases
+
+#### Implementation Features
+
+**Agent Structure**:
+- **Bank**: Leveraged investor representing the banking sector. Estimates volatility, sets leverage target, adjusts balance sheet
+- **Fund**: Unleveraged fundamentalist investor. Trades toward fundamental value, subject to GARCH demand shocks
+
+**State Space** (6 coupled variables):
+```
+σ²(t)  - Bank's perceived risk (volatility estimate)
+w_F(t) - Fund's portfolio weight in risky asset
+p(t)   - Current price of risky asset
+n(t)   - Fraction of risky asset owned by bank
+L_B(t) - Bank's liabilities
+p'(t)  - Lagged price (previous time step)
+```
+
+**Four Scenarios from Experiment 1**:
+
+| Scenario | Bank Size | GARCH Noise | Expected Behavior |
+|----------|-----------|-------------|-------------------|
+| (i) Deterministic Micro | Small (Ē=10⁻⁵) | None | Fixed point equilibrium |
+| (ii) Deterministic Macro | Large (Ē=2.27) | None | Chaotic leverage cycles |
+| (iii) Stochastic Micro | Small (Ē=10⁻⁵) | Strong | Mean-reverting random walk |
+| (iv) Stochastic Macro | Large (Ē=2.27) | Weak | Irregular leverage cycles |
+
+**Key Findings Verified**:
+- Small banks converge to fixed point (low price variance)
+- Large banks exhibit leverage cycles (chaotic oscillations)
+- GARCH noise increases volatility
+- Procyclical policy (Basel II): lower volatility → higher leverage
+- Slower adjustment speed increases stability
+- Longer risk estimation horizons improve stability
+
+**Run the simulation**:
+```bash
+# Run all four scenarios with comparison
+cargo run -p leverage_cycle
+
+# Verify key results from the paper
+cargo run -p leverage_cycle --example verify_paper_results
+
+# Demonstrate feedback loop dynamics
+cargo run -p leverage_cycle --example feedback_loop_demo
+```
+
+**Example Output**:
+```
+Scenario                    Price Std   Lev Range      Stability
+--------------------------- ----------- ----------- ---------------
+Deterministic Micro (i)         0.0000        0.00          Stable
+Deterministic Macro (ii)        0.1234        2.45 Leverage Cycles
+Stochastic Micro (iii)          0.0234        0.12          Stable
+Stochastic Macro (iv)           0.0567        1.89 Leverage Cycles
+```
+
+#### Implementation Architecture
+
+**Module**: `leverage_cycle/`
+
+**Event-Driven Design**:
+```rust
+enum Event {
+    Step { step: usize },     // Advance system by one time step
+    RunEnd { run_id: usize }, // Signal end of simulation run
+}
+```
+
+**Core Components**:
+- `LeverageCycleSystem`: Main agent implementing the coupled 6-variable dynamical system
+- `SystemState`: State vector with update equations
+- `GarchProcess`: Exogenous volatility clustering for stochastic scenarios
+- `StabilityAnalysis`: Compute VaR, CVaR, and classify stability regime
+
+**Critical Implementation Details**:
+
+1. **Volatility Estimation** (exponential moving average):
+   ```rust
+   σ²_new = (1 - τδ)σ² + τδ × [log(p/p') × t_VaR/τ]²
+   ```
+
+2. **Market Clearing**:
+   ```rust
+   p_new = (w_B × (c_B + ΔB) + w_F_new × c_F) / (1 - w_B×n - w_F_new×(1-n))
+   ```
+
+3. **Balance Sheet Adjustment**:
+   ```rust
+   ΔB = τ × θ × (λ̄ × E_B - A_B)  // Adjust toward target leverage
+   ```
+
+#### Parameters and Tuning
+
+**Standard Configuration**:
+```rust
+τ = 0.1        // Time step (years)
+δ = 0.5        // Memory parameter (~2 year lookback)
+t_VaR = 0.1    // VaR time horizon (years)
+θ = 10.0       // Leverage adjustment speed (year⁻¹)
+η = 10.0       // Equity redistribution speed (year⁻¹)
+b = -0.5       // Cyclicality (Basel II)
+α = 0.075      // Risk level
+Ē = varies     // Bank equity target (controls bank size)
+w_B = 0.3      // Bank's portfolio weight
+μ = 25.0       // Fundamental price
+```
+
+**Why These Values**:
+- **τ = 0.1**: Small enough for convergence, large enough for efficiency
+- **δ = 0.5**: ~2 year lookback matches typical risk estimation windows
+- **θ = 10**: Fast adjustment amplifies feedback; slower (θ < 5) increases stability
+- **b = -0.5**: Fully procyclical (Basel II/VaR) as in the paper
+
+#### Further Reading
+
+- **Paper Summary**: `/prior-art/leverage-cycles.md` - Comprehensive analysis with equations and implementation guide
+- **Original Paper**: Aymanns, C., Caccioli, F., Farmer, J.D. & Tan, V.W. (2016). "Taming the Basel Leverage Cycle." *Journal of Financial Stability*, 27, 263-277.
+
+---
+
 ## Reading
 
 [ABMs in economics and finance (Axtell and Farmer, 2025)](https://ora.ox.ac.uk/objects/uuid:8af3b96e-a088-4e29-ba1e-0760222277b7/files/s6969z182c)
@@ -512,12 +671,12 @@ TODO: Set up custom instructions to optimize for planning and research translati
 - ✅ The Evolution of Cooperation (Axelrod & Hamilton, 1981) - All three key findings implemented
 - ✅ Kirman and Vriend (2001) - Evolving market structure with price dispersion and loyalty
 - ✅ Gode and Sunder (1993) - Zero-intelligence traders and allocative efficiency
+- ✅ Aymanns et al. (2016) - Basel leverage cycle and systemic risk from VaR-based regulation
 
 **TODO**:
 - TRANSIMS code (Barrett et al., 1995, Nagel, Beckman and Barrett, 1998)
 - drug addiction (Agar and Wilson, 2002, Hoffer, Bobashev and Morris, 2009, Heard, Bobashev and Morris, 2014)
 - policy relevant and exercised to study policy alternatives (Dawid et al., 2012)
 - Donier et al. (2015) showed that a linear virtual order book profile
-- Aymanns et al. (2016) leverage cycles
 - Gode and Sunder (1997) - Extensions to ZI traders
 - K-level cognition (Camerer, Ho and Chong, 2004) has found use in ABMs (Latek, Kaminski and Axtell, 2009)
