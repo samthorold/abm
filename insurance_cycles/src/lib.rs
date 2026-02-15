@@ -528,11 +528,17 @@ impl Customer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "integration-tests")]
     use crate::insurer::Insurer;
+    #[cfg(feature = "integration-tests")]
     use crate::market_coordinator::MarketCoordinator;
+    #[cfg(feature = "integration-tests")]
     use des::EventLoop;
+    #[cfg(feature = "integration-tests")]
     use rand::rngs::StdRng;
+    #[cfg(feature = "integration-tests")]
     use rand::{Rng, SeedableRng};
+    #[cfg(feature = "integration-tests")]
     use std::collections::HashMap;
     use std::f64::consts::PI;
 
@@ -833,6 +839,7 @@ mod tests {
     /// This test validates the core research finding of Owadally et al. (2018):
     /// cycles emerge from simple firm-level behaviors without external shocks.
     #[test]
+    #[cfg(feature = "integration-tests")]
     fn test_endogenous_cycle_emergence() {
         let config = ModelConfig::baseline();
         let num_years = 100;
@@ -978,6 +985,7 @@ mod tests {
     /// The MarketCoordinator maintains "shadow state" (capital tracking) for capacity constraints.
     /// This test ensures the coordinator's aggregates match the sum of individual insurer stats.
     #[test]
+    #[cfg(feature = "integration-tests")]
     fn test_shadow_state_consistency() {
         let config = ModelConfig::baseline();
         let num_years = 50;

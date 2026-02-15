@@ -3,6 +3,9 @@ name = "insurance_cycles"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+integration-tests = []
+
 [dependencies]
 des = { path = "../des" }
 rand = "0.8"
