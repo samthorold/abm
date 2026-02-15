@@ -167,7 +167,13 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
    - Updated CSV export to write actual time series data (year, capital, loss ratios, solvency counts)
    - Added 4 tests for collector behavior
    - Verified simulation output: 50 annual snapshots showing capital evolution and insolvencies over time
-4. **Consolidate brokers** into a single BrokerPool agent
+4. ✅ **COMPLETED - Consolidate brokers** into a single BrokerPool agent
+   - Created `BrokerPool` agent managing N broker states internally
+   - Each broker maintains independent RNG, risk ID counter, and stats
+   - Risk ownership tracked in single HashMap for O(1) lookup vs O(N) broadcast
+   - Reduces agent count from 36 to 11 (71% reduction in broadcast fan-out)
+   - Added 6 tests for BrokerPool behavior
+   - Verified simulation output: identical behavior to 25 individual brokers
 5. **Fold BrokerSyndicateNetwork** into Broker or CentralRiskRepository
 6. **Implement underwriting markup** — required for underwriting cycle emergence
 7. **Tighten the loss ratio test** or add a longer-running integration test with narrower bounds

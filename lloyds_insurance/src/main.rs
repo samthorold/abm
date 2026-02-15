@@ -1,6 +1,6 @@
 use des::EventLoop;
 use lloyds_insurance::{
-    AttritionalLossGenerator, Broker, BrokerSyndicateNetwork, CatastropheLossGenerator,
+    AttritionalLossGenerator, BrokerPool, BrokerSyndicateNetwork, CatastropheLossGenerator,
     CentralRiskRepository, Event, MarketStatisticsCollector, ModelConfig, Stats, Syndicate,
     TimeGenerator,
 };
@@ -34,10 +34,8 @@ fn main() {
         agents.push(Box::new(Syndicate::new(i, config.clone())));
     }
 
-    // Add 25 brokers (1:5 ratio)
-    for i in 0..25 {
-        agents.push(Box::new(Broker::new(i, config.clone(), (i as u64) * 12345)));
-    }
+    // Add broker pool (manages 25 brokers internally, 1:5 ratio)
+    agents.push(Box::new(BrokerPool::new(25, config.clone(), 12345)));
 
     // Add broker-syndicate network
     agents.push(Box::new(BrokerSyndicateNetwork::new(
@@ -68,7 +66,7 @@ fn main() {
     println!("Agents initialized:");
     println!("  - 1 Time Generator");
     println!("  - 5 Syndicates");
-    println!("  - 25 Brokers");
+    println!("  - 1 Broker Pool (managing 25 brokers)");
     println!("  - 1 Broker-Syndicate Network");
     println!("  - 1 Central Risk Repository");
     println!("  - 1 Attritional Loss Generator");
