@@ -62,6 +62,7 @@ impl Syndicate {
             }
             let avg_claim_amount = weighted_sum / total_weight;
             // Convert to expected loss per policy: E[loss] = P(claim) × E[amount | claim]
+            // Note: avg_claim_amount is already the syndicate's line share (from loss_history)
             avg_claim_amount * claim_freq
         } else {
             // No history yet - use industry average
@@ -266,6 +267,7 @@ impl Syndicate {
         self.stats.capital = self.capital;
         self.stats.update_loss_ratio();
         self.stats.update_profit();
+        self.stats.markup_m_t = self.markup_m_t;
 
         // Update exposure by peril region (simplified - would need risk info)
         // For now, just track total exposure
@@ -362,16 +364,20 @@ mod tests {
         // With no history, should use industry average scaled by line size
         let industry_avg = config.gamma_mean * config.yearly_claim_frequency;
         let line_size = config.default_lead_line_size;
-        let expected_price = industry_avg * line_size;
+        let base_price = industry_avg * line_size;
+        let volatility_loading = config.volatility_weight * base_price;
+        let expected_price = base_price + volatility_loading;
 
         let price = syndicate.calculate_actuarial_price(1, industry_avg);
 
-        // Price should equal industry average times line size
-        // (because syndicate only takes partial exposure)
+        // Price should equal base price plus volatility loading
+        // With volatility_weight=0.2: $150k base + $30k loading = $180k
         assert!(
             (price - expected_price).abs() < 1.0,
-            "Expected ${:.0}, got ${:.0}",
+            "Expected ${:.0} (base ${:.0} + loading ${:.0}), got ${:.0}",
             expected_price,
+            base_price,
+            volatility_loading,
             price
         );
     }
