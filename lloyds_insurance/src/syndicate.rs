@@ -1060,6 +1060,158 @@ mod tests {
     }
 
     #[test]
+    fn test_pricing_calculation_detailed() {
+        // Debug test to verify pricing calculations match expectations
+        let config = ModelConfig::default();
+        let syndicate = Syndicate::new(0, config.clone());
+
+        // Expected calculation:
+        // industry_lambda_t = 0.1 (10% claim frequency)
+        // industry_mu_t = 3M * 0.5 = 1.5M (mean claim for 50% line)
+        // industry_avg_loss = 0.1 * 1.5M = $150k per participation
+        let industry_avg_loss = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+
+        assert_eq!(
+            syndicate.industry_lambda_t, 0.1,
+            "Claim frequency should be 10%"
+        );
+        assert_eq!(
+            syndicate.industry_mu_t, 1_500_000.0,
+            "Mean claim should be $1.5M for 50% line"
+        );
+        assert_eq!(
+            industry_avg_loss, 150_000.0,
+            "Expected loss per participation should be $150k"
+        );
+
+        // Calculate actuarial price (should add 20% volatility loading)
+        let actuarial_price = syndicate.calculate_actuarial_price(1, industry_avg_loss);
+
+        // Base: $150k, +20% volatility = $180k
+        assert!(
+            (actuarial_price - 180_000.0).abs() < 1_000.0,
+            "Actuarial price should be ~$180k (base + 20% volatility), got ${:.0}",
+            actuarial_price
+        );
+
+        // Apply 15% markup: $180k * e^0.15 ≈ $209k
+        let final_price = syndicate.apply_underwriting_markup(actuarial_price);
+        let expected_final = actuarial_price * 0.15_f64.exp(); // e^0.15 ≈ 1.162
+
+        assert!(
+            (final_price - expected_final).abs() < 1_000.0,
+            "Final price should be actuarial * e^0.15, expected ${:.0}, got ${:.0}",
+            expected_final,
+            final_price
+        );
+    }
+
+    #[test]
+    fn test_full_quote_cycle() {
+        // Test a complete quote -> accept -> premium cycle
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        let risk_id = 1;
+        let peril_region = 0;
+        let risk_limit = 10_000_000.0;
+
+        // Step 1: Syndicate receives lead quote request
+        let quote_response = syndicate.handle_lead_quote_request(
+            risk_id,
+            peril_region,
+            risk_limit,
+            0, // current_t
+        );
+
+        // Extract the quoted premium
+        let quoted_premium = if let Some((_, Event::LeadQuoteOffered { price, .. })) = quote_response.first() {
+            *price
+        } else {
+            panic!("Expected LeadQuoteOffered event");
+        };
+
+        println!("\n=== Quote Cycle Debug ===");
+        println!("Quoted premium: ${:.0}", quoted_premium);
+
+        // Expected: ~$209k based on our unit test
+        assert!(
+            quoted_premium > 200_000.0,
+            "Quoted premium should be >$200k, got ${:.0}",
+            quoted_premium
+        );
+
+        // Step 2: Quote gets accepted
+        let initial_capital = syndicate.capital;
+        syndicate.handle_lead_accepted(risk_id, peril_region, risk_limit);
+
+        let premium_collected = syndicate.annual_premiums;
+        println!("Premium collected: ${:.0}", premium_collected);
+        println!("Capital increase: ${:.0}", syndicate.capital - initial_capital);
+
+        // Verify premium collected matches what was quoted
+        assert!(
+            (premium_collected - quoted_premium).abs() < 1.0,
+            "Premium collected (${:.0}) should match quoted (${:.0})",
+            premium_collected,
+            quoted_premium
+        );
+    }
+
+    #[test]
+    fn test_loss_ratio_with_simulated_claims() {
+        // Simulate many policies to verify loss ratios average < 1.0
+        use rand::{Rng, SeedableRng};
+        use rand_distr::{Distribution, Gamma};
+
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
+
+        // Gamma distribution for claim sizes
+        let shape = 1.0 / (config.gamma_cov * config.gamma_cov);
+        let scale = config.gamma_mean * config.gamma_cov * config.gamma_cov;
+        let gamma = Gamma::new(shape, scale).unwrap();
+
+        let num_policies = 1000;
+        let line_size = config.default_lead_line_size;
+
+        // Write policies and collect premiums
+        for i in 0..num_policies {
+            syndicate.handle_lead_accepted(i, 0, config.risk_limit);
+        }
+
+        let total_premiums = syndicate.annual_premiums;
+
+        // Generate claims with 10% frequency
+        let mut total_claims = 0.0;
+        for i in 0..num_policies {
+            if rng.r#gen::<f64>() < config.yearly_claim_frequency {
+                let claim_amount = gamma.sample(&mut rng).min(config.risk_limit);
+                let syndicate_share = claim_amount * line_size;
+                syndicate.handle_claim(i, syndicate_share);
+                total_claims += syndicate_share;
+            }
+        }
+
+        let loss_ratio = total_claims / total_premiums;
+
+        println!("\n=== Simulated Loss Ratio ===");
+        println!("Policies: {}", num_policies);
+        println!("Total premiums: ${:.0}", total_premiums);
+        println!("Total claims: ${:.0}", total_claims);
+        println!("Loss ratio: {:.4}", loss_ratio);
+        println!("Expected: <1.0 (due to 20% volatility loading + 15% markup)");
+
+        // With 20% volatility loading and 15% markup, loss ratio should average < 0.8
+        assert!(
+            loss_ratio < 0.95,
+            "Loss ratio should be <0.95 with volatility loading and markup, got {:.4}",
+            loss_ratio
+        );
+    }
+
+    #[test]
     fn test_pricing_strength_adjusts_follow_line_size() {
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config.clone());
