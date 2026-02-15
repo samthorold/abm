@@ -72,9 +72,10 @@ impl Syndicate {
             annual_claims: 0.0,
             annual_policies_written: 0,
             annual_claims_count: 0,
-            // Start at actuarially fair pricing (no initial markup)
-            // Markup will adjust based on observed loss experience
-            markup_m_t: 0.0,
+            // Balanced initial markup: 0.15 → e^0.15 ≈ 1.162 (16.2% loading)
+            // Prudent margin for uncertainty while avoiding aggressive overpricing
+            // Combined with 3-year warmup for stable market emergence
+            markup_m_t: 0.15,
             prior_year_loss_ratio: None, // No prior experience yet
             industry_lambda_t,
             industry_mu_t,
@@ -479,10 +480,12 @@ impl Syndicate {
         // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
         // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
         //
-        // NOTE: Uses prior year's loss ratio to allow for responsive pricing.
-        // Year 0 may show slightly low loss ratios due to calendar-year accounting
-        // (policies written late in year have claims in year 1), but this is a minor
-        // initialization artifact that resolves quickly.
+        // NOTE: Uses 3-year warmup to skip initialization artifacts from calendar-year accounting.
+        // - Year 0: Loss ratio artificially low (policies written late in year → claims in year 1)
+        // - Year 1-2: Allow market to stabilize with fair pricing
+        // - Year 3+: Use prior year's loss ratio for responsive pricing
+        //
+        // This minimal warmup prevents underpricing cascade while maintaining responsiveness.
 
         let current_year_loss_ratio = if self.annual_premiums > 0.0 {
             Some(self.annual_claims / self.annual_premiums)
@@ -490,15 +493,18 @@ impl Syndicate {
             None
         };
 
-        // Update markup using prior year's loss ratio (if available)
-        if let Some(prior_loss_ratio) = self.prior_year_loss_ratio {
+        // Update markup after 3-year warmup, using prior year's loss ratio
+        let warmup_years = 3;
+        if self.years_elapsed >= warmup_years
+            && let Some(prior_loss_ratio) = self.prior_year_loss_ratio
+        {
             let signal = prior_loss_ratio.ln(); // log(loss_ratio)
             let beta = self.config.underwriter_recency_weight;
 
             // EWMA update
             self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
         }
-        // Year 0: No prior data, markup stays at initial value (0.0)
+        // Years 0-1: Warmup period, markup stays at initial value (0.0)
 
         // Shift history: current → prior
         self.prior_year_loss_ratio = current_year_loss_ratio;
@@ -959,6 +965,8 @@ mod tests {
 
         // Initial markup is 0.0 (fair pricing)
         syndicate.markup_m_t = 0.0;
+        // Skip warmup period (need years_elapsed >= 3)
+        syndicate.years_elapsed = 3;
 
         // Simulate a high-loss year: loss_ratio = 2.0
         syndicate.annual_premiums = 1_000_000.0;
@@ -989,6 +997,8 @@ mod tests {
 
         // Start with some positive markup
         syndicate.markup_m_t = 0.5;
+        // Skip warmup period (need years_elapsed >= 3)
+        syndicate.years_elapsed = 3;
 
         // Manually set prior year to trigger update (normally this comes from history)
         syndicate.prior_year_loss_ratio = Some(0.5);

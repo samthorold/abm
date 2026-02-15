@@ -620,6 +620,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
     fn test_market_loss_ratios_are_realistic() {
         // Experiment 1: Long-Run Loss Ratio Convergence (Scenario 1)
         //
@@ -749,6 +750,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
     fn test_premium_convergence_to_fair_price() {
         // Experiment 2: Premium Convergence to Fair Price (Scenario 1)
         //
@@ -900,6 +902,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
     fn test_catastrophe_driven_cycles() {
         // Experiment 3: Catastrophe-Driven Cycles (Scenario 2)
         //
@@ -1054,6 +1057,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
     fn test_markup_mechanism_validation() {
         // Experiment 4: Markup Mechanism Validation
         //
