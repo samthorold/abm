@@ -17,6 +17,7 @@ Focus on:
 - Description of the main aims and findings of the paper.
 - A detailed description of the experiment set-up and how this relates to the findings.
 - Expected outcomes of the experiments.
+  The expected outcomes will be used to iteratively check that the experiment(s) have been implemented correctly.
 
 DO NOT focus on:
 - Testing strategy.
