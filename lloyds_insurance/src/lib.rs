@@ -548,16 +548,24 @@ pub mod test_helpers {
     use super::*;
     use des::EventLoop;
 
-    /// Run a scenario configuration for multiple replications
+    /// Run a scenario configuration for multiple replications in parallel
+    ///
+    /// Executes `num_replications` independent simulations concurrently, each with a unique
+    /// seed derived from `base_seed`. Progress is reported every 2 replications (or when complete).
+    ///
+    /// # Returns
+    ///
+    /// Vector of market time series, one per replication, in replication order.
     pub fn run_scenario_replications(
         config: ModelConfig,
         num_years: usize,
         num_replications: usize,
         base_seed: u64,
     ) -> Vec<Vec<MarketSnapshot>> {
-        let mut all_results = Vec::new();
+        use des::parallel::{ParallelRunner, simple_progress_reporter};
 
-        for replication in 0..num_replications {
+        // Run replications in parallel with progress reporting
+        let results = ParallelRunner::new(num_replications, |replication| {
             let events = vec![(0, Event::Day)];
 
             // Use different seeds for each replication
@@ -588,23 +596,26 @@ pub mod test_helpers {
                 )));
             }
 
-            let mut event_loop = EventLoop::new(events, agents);
-            event_loop.run(365 * num_years);
+            EventLoop::new(events, agents)
+        })
+        .progress(simple_progress_reporter(2)) // Report every 2 replications
+        .run(365 * num_years);
 
-            let stats = event_loop.stats();
-            let time_series = stats
-                .iter()
-                .filter_map(|s| match s {
-                    Stats::CombinedMarketStats(cs) => Some(cs.market_series.snapshots.clone()),
-                    _ => None,
-                })
-                .next()
-                .expect("Should have combined market stats");
-
-            all_results.push(time_series);
-        }
-
-        all_results
+        // Extract market snapshots from results
+        results
+            .into_iter()
+            .map(|result| {
+                let stats = result.expect("Replication should succeed");
+                stats
+                    .iter()
+                    .filter_map(|s| match s {
+                        Stats::CombinedMarketStats(cs) => Some(cs.market_series.snapshots.clone()),
+                        _ => None,
+                    })
+                    .next()
+                    .expect("Should have combined market stats")
+            })
+            .collect()
     }
 
     /// Count total insolvencies across all replications at final snapshot
