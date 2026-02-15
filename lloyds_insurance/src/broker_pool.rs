@@ -94,7 +94,8 @@ impl BrokerPool {
     }
 
     fn handle_lead_quote_accepted(&mut self, risk_id: usize) {
-        // O(1) lookup instead of O(N) broadcast to all brokers
+        // O(1) HashMap lookup instead of O(N) event broadcast to N individual broker agents
+        // With 25 brokers, this is 25x more efficient than the individual broker approach
         if let Some(&broker_id) = self.risk_ownership.get(&risk_id) {
             self.brokers[broker_id].stats.risks_bound += 1;
         }
@@ -114,10 +115,15 @@ impl Agent<Event, Stats> for BrokerPool {
     }
 
     fn stats(&self) -> Stats {
-        // Return aggregated stats for all brokers
-        // For simplicity, we'll return the first broker's stats
-        // In a full implementation, might want to aggregate or return all
-        Stats::BrokerStats(self.brokers[0].stats.clone())
+        // Return aggregated stats across all brokers in the pool
+        let mut aggregated = BrokerStats::new(0); // ID 0 represents the pool
+
+        for broker in &self.brokers {
+            aggregated.risks_generated += broker.stats.risks_generated;
+            aggregated.risks_bound += broker.stats.risks_bound;
+        }
+
+        Stats::BrokerStats(aggregated)
     }
 }
 
@@ -237,6 +243,34 @@ mod tests {
             risk_ids.len(),
             "All risk IDs should be unique"
         );
+    }
+
+    #[test]
+    fn test_broker_pool_aggregates_stats() {
+        let config = ModelConfig::default();
+        let mut pool = BrokerPool::new(25, config, 12345);
+
+        // Generate risks over multiple days
+        for _ in 0..100 {
+            pool.act(0, &Event::Day);
+        }
+
+        // Get stats
+        let stats = pool.stats();
+        if let Stats::BrokerStats(broker_stats) = stats {
+            // Should aggregate across all 25 brokers
+            let total_generated: usize = pool.brokers.iter().map(|b| b.stats.risks_generated).sum();
+            assert_eq!(
+                broker_stats.risks_generated, total_generated,
+                "Stats should aggregate risks_generated across all brokers"
+            );
+
+            // With 25 brokers and λ=0.06 per day, expect ~150 total risks over 100 days
+            assert!(broker_stats.risks_generated > 50);
+            assert!(broker_stats.risks_generated < 500);
+        } else {
+            panic!("Expected BrokerStats");
+        }
     }
 
     #[test]

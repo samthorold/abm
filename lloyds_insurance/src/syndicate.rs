@@ -233,7 +233,15 @@ impl Syndicate {
 
 impl Agent<Event, Stats> for Syndicate {
     fn act(&mut self, current_t: usize, data: &Event) -> Response<Event, Stats> {
-        // Handle Year events even if insolvent (for market statistics reporting)
+        // EXCEPTION: Handle Year events even if insolvent (for market statistics reporting)
+        //
+        // Rationale: Insolvent syndicates must still report their capital state to the
+        // MarketStatisticsCollector for accurate time series data. This is the ONLY event
+        // that bypasses the insolvency check, as it represents regulatory reporting
+        // (which continues even after insolvency) rather than active market participation.
+        //
+        // The handle_year_end() method includes its own insolvency check to ensure
+        // insolvent syndicates don't pay dividends.
         if matches!(data, Event::Year) {
             self.handle_year_end();
             self.update_stats();

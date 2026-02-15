@@ -6,6 +6,18 @@ use std::collections::HashMap;
 const DAYS_PER_YEAR: usize = 365;
 
 /// Collects market statistics over time to build a time series
+///
+/// Design rationale: This agent exists separately (rather than being folded into
+/// TimeGenerator or another agent) because:
+/// 1. It represents a distinct real-world entity: regulatory/market oversight that
+///    collects and publishes aggregate market statistics
+/// 2. It follows single-responsibility principle: only aggregates market data
+/// 3. It maintains clean separation of concerns: TimeGenerator manages time flow,
+///    MarketStatisticsCollector observes market state
+/// 4. It enables modular testing and future extensions (e.g., real-time market alerts)
+///
+/// Trade-off: Adds one more agent to the simulation, but the observability and
+/// modularity benefits outweigh the minimal broadcast overhead.
 pub struct MarketStatisticsCollector {
     num_syndicates: usize,
     time_series: TimeSeriesStats,
@@ -37,6 +49,8 @@ impl MarketStatisticsCollector {
         // Start collecting for the new year
         // Note: Snapshots are created when all reports arrive (in handle_syndicate_report),
         // not when the Year event arrives, since syndicates report AFTER receiving the Year event
+
+        // Integer division: year 0 = days 0-364, year 1 = days 365-729, etc.
         self.current_year = current_t / DAYS_PER_YEAR;
         self.current_day = current_t;
         self.pending_reports.clear();
@@ -69,7 +83,12 @@ impl MarketStatisticsCollector {
         let num_insolvent = self.num_syndicates - num_solvent;
 
         // TODO: These fields require syndicates to report more data via events
-        // For now, they're set to 0 until we extend SyndicateCapitalReported
+        // Future enhancement: Extend Event::SyndicateCapitalReported to include:
+        //   - total_premiums_collected (for avg_premium calculation)
+        //   - loss_ratio (for avg_loss_ratio calculation)
+        //   - num_policies (for total_policies calculation)
+        // This will enable full validation of the paper's temporal dynamics
+        // (premium convergence, loss ratio coupling, etc.)
         let avg_premium = 0.0;
         let avg_loss_ratio = 0.0;
         let total_policies = 0;
@@ -111,6 +130,7 @@ impl Agent<Event, Stats> for MarketStatisticsCollector {
     }
 
     fn stats(&self) -> Stats {
+        // Return time series stats (market-level aggregated data across all syndicates)
         Stats::TimeSeriesStats(self.time_series.clone())
     }
 }
