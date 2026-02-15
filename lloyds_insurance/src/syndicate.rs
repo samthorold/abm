@@ -24,10 +24,9 @@ pub struct Syndicate {
     // m_t captures competitive pressure based on loss experience
     markup_m_t: f64,
 
-    // Loss ratio history for lagged markup update (fixes cohort mismatch)
-    // Use prior year's loss ratio for responsive pricing
-    // (1-year lag allows timely adjustment while providing stable signal)
-    prior_year_loss_ratio: Option<f64>, // Year N-1
+    // Loss ratio history (tracked but not used in markup calculation)
+    // Markup updates use current year's loss ratio per paper specification
+    prior_year_loss_ratio: Option<f64>,
 
     // Dynamic industry statistics (updated annually from MarketStatisticsCollector)
     // These replace the hardcoded config values for actuarial pricing
