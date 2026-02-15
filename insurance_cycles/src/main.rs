@@ -4,7 +4,6 @@
 //! underwriting cycles from simple firm-level behavior.
 
 use des::EventLoop;
-use insurance_cycles::claim_generator::ClaimGenerator;
 use insurance_cycles::insurer::Insurer;
 use insurance_cycles::market_coordinator::MarketCoordinator;
 use insurance_cycles::{Customer, Event, ModelConfig, Stats, DAYS_PER_YEAR};
@@ -72,13 +71,14 @@ fn main() {
     }
 
     // Add market coordinator
-    let coordinator =
-        MarketCoordinator::new(config.clone(), customers.clone(), insurer_positions.clone());
+    let coordinator = MarketCoordinator::new(
+        config.clone(),
+        customers.clone(),
+        insurer_positions.clone(),
+        seed + 1000, // claim_seed
+        seed + 2000, // allocation_seed
+    );
     agents.push(Box::new(coordinator));
-
-    // Add claim generator
-    let claim_generator = ClaimGenerator::new(config.clone(), seed + 1000);
-    agents.push(Box::new(claim_generator));
 
     println!("Agents initialized: {} agents", agents.len());
 
@@ -162,6 +162,52 @@ fn main() {
                 let year = start + i + 1;
                 println!("    Year {}: {:.3}", year, ratio);
             }
+        }
+
+        // Statistical Validation (Sprint 4)
+        println!("\n=== Statistical Validation ===\n");
+
+        if final_market.loss_ratio_history.len() >= 20 {
+            // Autocorrelation
+            if let Some(acf1) = final_market.autocorrelation(1) {
+                println!("Lag-1 autocorrelation: {:.3}", acf1);
+            }
+            if let Some(acf2) = final_market.autocorrelation(2) {
+                println!("Lag-2 autocorrelation: {:.3}", acf2);
+            }
+
+            // AR(2) model
+            if let Some((a0, a1, a2)) = final_market.fit_ar2() {
+                println!(
+                    "\nAR(2) model: x_t = {:.3} + {:.3}·x_{{t-1}} + {:.3}·x_{{t-2}}",
+                    a0, a1, a2
+                );
+                println!("Paper targets: a0≈0.937, a1≈0.467, a2≈-0.100");
+
+                if let Some(has_cycles) = final_market.check_cycle_conditions() {
+                    println!("\nCycle conditions met: {}", has_cycles);
+                    println!("  - a1 > 0 (positive feedback): {}", a1 > 0.0);
+                    println!(
+                        "  - -1 < a2 < 0 (damped oscillation): {}",
+                        a2 > -1.0 && a2 < 0.0
+                    );
+                    println!(
+                        "  - a1² + 4a2 < 0 (complex roots): {}",
+                        a1.powi(2) + 4.0 * a2 < 0.0
+                    );
+                }
+            }
+
+            // Spectral analysis
+            if let Some(freq) = final_market.dominant_frequency() {
+                let period = 1.0 / freq;
+                println!("\nSpectral analysis:");
+                println!("  Dominant frequency: {:.3} cycles/year", freq);
+                println!("  Implied period: {:.1} years", period);
+                println!("  Paper target: ~5.9 years (0.17 cycles/year)");
+            }
+        } else {
+            println!("Insufficient data for statistical validation (need ≥20 years)");
         }
     }
 
