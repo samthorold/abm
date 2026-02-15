@@ -286,6 +286,10 @@ impl Agent<Event, Stats> for Syndicate {
         // The handle_year_end() method includes its own insolvency check to ensure
         // insolvent syndicates don't pay dividends.
         if matches!(data, Event::Year) {
+            // Capture annual metrics BEFORE handle_year_end() resets them
+            let annual_premiums = self.annual_premiums;
+            let annual_claims = self.annual_claims;
+
             self.handle_year_end();
             self.update_stats();
 
@@ -295,8 +299,8 @@ impl Agent<Event, Stats> for Syndicate {
                 Event::SyndicateCapitalReported {
                     syndicate_id: self.syndicate_id,
                     capital: self.capital,
-                    annual_premiums: self.annual_premiums,
-                    annual_claims: self.annual_claims,
+                    annual_premiums,
+                    annual_claims,
                     num_policies: self.stats.num_policies,
                 },
             )]);
