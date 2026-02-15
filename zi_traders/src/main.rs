@@ -112,15 +112,28 @@ fn run_experiment(
     trader_type: TraderType,
     num_sessions: usize,
 ) -> AggregateResults {
-    let mut sessions = Vec::new();
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    for session_id in 0..num_sessions {
-        if session_id % 100 == 0 && session_id > 0 {
-            println!("  Completed {}/{} sessions", session_id, num_sessions);
-        }
-        let results = run_session(market_config, trader_type, session_id);
-        sessions.push(results);
-    }
+    // Progress reporting
+    let completed = Arc::new(AtomicUsize::new(0));
+
+    // Run sessions in parallel
+    let sessions: Vec<SessionResults> = (0..num_sessions)
+        .into_par_iter()
+        .map(|session_id| {
+            let result = run_session(market_config, trader_type, session_id);
+
+            // Update progress
+            let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            if count.is_multiple_of(100) {
+                println!("  Completed {}/{} sessions", count, num_sessions);
+            }
+
+            result
+        })
+        .collect();
 
     AggregateResults::from_sessions(&sessions)
 }
