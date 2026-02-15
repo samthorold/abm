@@ -21,7 +21,8 @@ fn main() {
 
     // Configuration
     let config = ModelConfig::baseline();
-    let num_years = 100; // Run for 100 years to see clear cycles
+    let num_years = 1000; // Run for 1000 years (paper validation period)
+    let burn_in = 100; // Discard first 100 years (paper specifies this)
     let seed = 42;
 
     println!("Configuration:");
@@ -137,7 +138,15 @@ fn main() {
             "  Price range: ${:.2} - ${:.2}",
             final_market.min_price, final_market.max_price
         );
-        println!("  Average price: ${:.2}\n", final_market.avg_price);
+        println!("  Average price: ${:.2}", final_market.avg_price);
+        println!(
+            "  Market concentration (HHI): {:.3}",
+            final_market.herfindahl_index
+        );
+        println!(
+            "  Market inequality (Gini): {:.3}\n",
+            final_market.gini_coefficient
+        );
 
         // Loss ratio time series
         println!("Loss Ratio History:");
@@ -163,6 +172,42 @@ fn main() {
             for (i, &ratio) in final_market.loss_ratio_history[start..].iter().enumerate() {
                 let year = start + i + 1;
                 println!("    Year {}: {:.3}", year, ratio);
+            }
+        }
+
+        // === Steady State Analysis (Post Burn-in) ===
+        println!(
+            "\n=== Steady State Analysis (Years {}-{}) ===\n",
+            burn_in + 1,
+            num_years
+        );
+
+        if final_market.loss_ratio_history.len() > burn_in {
+            let (ss_mean, ss_std, ss_has_cycles, ss_period, ss_ar2) =
+                final_market.analyze_window(burn_in, final_market.loss_ratio_history.len());
+
+            println!("Steady-state loss ratio:");
+            println!("  Mean: {:.3} (paper target: ~1.0)", ss_mean);
+            println!("  Std Dev: {:.3}", ss_std);
+
+            if ss_has_cycles {
+                println!("  ✓ Cycles detected in steady state!");
+                if let Some(period) = ss_period {
+                    println!(
+                        "  Steady-state cycle period: {:.1} years (paper target: ~5.9)",
+                        period
+                    );
+                }
+            } else {
+                println!("  ✗ No clear cycles detected in steady state");
+            }
+
+            if let Some((a0, a1, a2)) = ss_ar2 {
+                println!(
+                    "\n  Steady-state AR(2): x_t = {:.3} + {:.3}·x_{{t-1}} + {:.3}·x_{{t-2}}",
+                    a0, a1, a2
+                );
+                println!("  Paper targets: a0≈0.937, a1≈0.467, a2≈-0.100");
             }
         }
 

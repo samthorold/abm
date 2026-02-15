@@ -236,9 +236,12 @@ impl MarketCoordinator {
                 .map(|(&insurer_id, &price)| {
                     let insurer_pos = self.insurer_positions[&insurer_id];
                     let distance = circular_distance(customer.position, insurer_pos);
-                    // Add ±5% noise to reduce deterministic market concentration
-                    let noise = self.allocation_rng.gen_range(-0.05..0.05) * price;
-                    let total_cost = price + gamma * distance + noise;
+                    // Add noise to total cost (bounded rationality / decision error)
+                    let base_cost = price + gamma * distance;
+                    let noise_range = self.config.allocation_noise;
+                    let noise =
+                        self.allocation_rng.gen_range(-noise_range..noise_range) * base_cost;
+                    let total_cost = base_cost + noise;
                     (insurer_id, total_cost)
                 })
                 .collect();
@@ -410,6 +413,26 @@ impl MarketCoordinator {
 
     /// Handle market cleared - calculate premiums and update shadow capital
     fn handle_market_cleared(&mut self, allocations: &[(usize, usize)]) {
+        // Calculate market shares for concentration metrics
+        let mut customer_counts: HashMap<usize, usize> = HashMap::new();
+        for &(_customer_id, insurer_id) in allocations {
+            *customer_counts.entry(insurer_id).or_insert(0) += 1;
+        }
+
+        let total_customers = allocations.len() as f64;
+        let market_shares: Vec<f64> = self
+            .insurer_positions
+            .keys()
+            .map(|&insurer_id| {
+                customer_counts.get(&insurer_id).copied().unwrap_or(0) as f64 / total_customers
+            })
+            .collect();
+
+        // Update concentration metrics
+        self.stats.herfindahl_index = MarketStats::calculate_herfindahl(&market_shares);
+        self.stats.gini_coefficient = MarketStats::calculate_gini(&market_shares);
+
+        // Calculate premiums and update shadow capital
         for &(customer_id, insurer_id) in allocations {
             let premium = self.calculate_premium(customer_id, insurer_id);
             self.industry_total_premiums += premium;
