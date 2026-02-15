@@ -10,6 +10,9 @@ use rand_distr::{Distribution, Poisson};
 pub struct CatastropheLossGenerator {
     scheduled_catastrophes: Vec<ScheduledCatastrophe>,
     stats: CatastropheLossGeneratorStats,
+    // NEW: Annual catastrophe tracking
+    current_year: usize,
+    catastrophes_this_year: Vec<(usize, f64)>, // (region, loss)
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +34,8 @@ impl CatastropheLossGenerator {
         Self {
             scheduled_catastrophes,
             stats,
+            current_year: 0,
+            catastrophes_this_year: Vec::new(),
         }
     }
 
@@ -108,6 +113,33 @@ impl CatastropheLossGenerator {
 impl Agent<Event, Stats> for CatastropheLossGenerator {
     fn act(&mut self, current_t: usize, data: &Event) -> Response<Event, Stats> {
         match data {
+            Event::Year => {
+                // Calculate year and emit catastrophe report for the year that just ended
+                let year = current_t / 365;
+
+                let total_loss: f64 = self
+                    .catastrophes_this_year
+                    .iter()
+                    .map(|(_, loss)| loss)
+                    .sum();
+                let num_events = self.catastrophes_this_year.len();
+
+                // Emit year-end catastrophe report
+                let events = vec![(
+                    current_t,
+                    Event::YearEndCatastropheReport {
+                        year,
+                        total_loss,
+                        num_events,
+                    },
+                )];
+
+                // Reset for new year
+                self.current_year = year;
+                self.catastrophes_this_year.clear();
+
+                Response::events(events)
+            }
             Event::Day => {
                 // Check if any catastrophes should fire today
                 let mut events = Vec::new();
@@ -123,6 +155,9 @@ impl Agent<Event, Stats> for CatastropheLossGenerator {
                                 total_loss: cat.total_loss,
                             },
                         ));
+                        // Track for annual report
+                        self.catastrophes_this_year
+                            .push((cat.peril_region, cat.total_loss));
                         self.scheduled_catastrophes.remove(0);
                     } else if cat.time > current_t {
                         break; // Future catastrophes
