@@ -58,8 +58,8 @@
 
 use crate::EventLoop;
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Executes multiple EventLoop scenarios in parallel
 ///
@@ -267,12 +267,11 @@ where
                 .into_par_iter()
                 .map(|scenario_id| {
                     // Run scenario with panic catching
-                    let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut event_loop = (self.builder)(scenario_id);
-                            event_loop.run(run_until);
-                            event_loop.stats()
-                        }));
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut event_loop = (self.builder)(scenario_id);
+                        event_loop.run(run_until);
+                        event_loop.stats()
+                    }));
 
                     // Update progress
                     let completed = progress_counter.fetch_add(1, Ordering::SeqCst) + 1;

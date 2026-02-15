@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo run --example parallel_demo -p simple_queue
 
-use des::parallel::{run_parallel, simple_progress_reporter, ParallelRunner};
+use des::parallel::{ParallelRunner, run_parallel, simple_progress_reporter};
 use simple_queue::{ConsumerProcess, Event, Resource, Stats};
 
 /// Create an EventLoop for a bank counter simulation
@@ -46,8 +46,13 @@ fn main() {
 
     let duration = start.elapsed();
 
-    println!("Completed {} scenarios in {:.2}s", results.len(), duration.as_secs_f64());
-    println!("Success rate: {}/{}\n",
+    println!(
+        "Completed {} scenarios in {:.2}s",
+        results.len(),
+        duration.as_secs_f64()
+    );
+    println!(
+        "Success rate: {}/{}\n",
         results.iter().filter(|r| r.is_ok()).count(),
         results.len()
     );
@@ -63,7 +68,8 @@ fn main() {
     let duration = start.elapsed();
 
     println!("Completed in {:.2}s", duration.as_secs_f64());
-    println!("Success rate: {}/{}\n",
+    println!(
+        "Success rate: {}/{}\n",
         results.iter().filter(|r| r.is_ok()).count(),
         results.len()
     );
@@ -73,23 +79,21 @@ fn main() {
     let start = std::time::Instant::now();
 
     let results = ParallelRunner::new(100, create_bank_counter_simulation)
-        .num_threads(4)  // Limit to 4 threads
+        .num_threads(4) // Limit to 4 threads
         .progress(simple_progress_reporter(25))
         .run(1000);
 
     let duration = start.elapsed();
 
     // Extract statistics
-    let successful_stats: Vec<_> = results
-        .iter()
-        .filter_map(|r| r.as_ref().ok())
-        .collect();
+    let successful_stats: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
 
     println!("\n=== Aggregate Results ===");
     println!("Total scenarios: {}", results.len());
     println!("Successful: {}", successful_stats.len());
     println!("Elapsed time: {:.2}s", duration.as_secs_f64());
-    println!("Throughput: {:.1} scenarios/sec",
+    println!(
+        "Throughput: {:.1} scenarios/sec",
         results.len() as f64 / duration.as_secs_f64()
     );
 
