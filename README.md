@@ -639,6 +639,318 @@ w_B = 0.3      // Bank's portfolio weight
 
 ---
 
+## Shared Implementation Patterns
+
+After implementing seven distinct ABM papers, clear architectural patterns have emerged across all modules. These patterns guide the design of new simulations and ensure consistency with the DES framework.
+
+### Core Structural Patterns
+
+#### 1. Domain Event Enum Pattern
+**Every module defines a domain-specific `Event` enum capturing all possible state transitions.**
+
+Examples across modules:
+- `simple_queue`: `ResourceRequested`, `ResourceAcquired`, `ResourceReleased`, `ResourceRequestExpired`
+- `evolution_coop`: `RoundStart`, `DecisionMade`, `RoundComplete`, `MatchComplete`
+- `zi_traders`: `PeriodStart`, `OrderRequest`, `OrderSubmitted`, `Transaction`
+- `insurance_cycles`: `YearStart`, `PricingRequest`, `PriceSubmitted`, `MarketCleared`
+
+**Design principle**: Events are past-tense verbs representing state changes, not imperative commands.
+
+#### 2. Unified Stats Enum Pattern
+**All modules define individual stats structs wrapped in a unified `Stats` enum.**
+
+```rust
+// Individual stats for each agent type
+pub struct ResourceStats { ... }
+pub struct ConsumerStats { ... }
+
+// Unified enum for heterogeneous collection
+pub enum Stats {
+    ResourceStats(ResourceStats),
+    ConsumerStats(ConsumerStats),
+}
+```
+
+**Rationale**: Allows `EventLoop<T, S>` to collect heterogeneous stats from different agent types in a type-safe manner.
+
+#### 3. Stats-as-Observable-State Pattern
+**Stats serve as the public interface to agent state, used for testing and analysis.**
+
+Stats structs universally contain:
+- **Configuration context**: `agent_id`, `trader_type`, `position`, `capacity`
+- **Current state**: `current_queue_length`, `num_customers`, `capital`, `best_bid`
+- **Cumulative metrics**: `total_arrivals`, `total_score`, `transactions_completed`
+- **Time series**: `price_history`, `loss_ratio_history`, `leverage_history`
+
+**Key insight**: The `stats()` method acts as a **projection** from private agent state to observable state. Tests verify agent behavior through Stats, not internal fields, maintaining proper encapsulation.
+
+### Agent Architecture Patterns
+
+#### 4. Two Fundamental Agent Architectures
+
+**Pattern A: All-Entity Agents** (Decentralized Systems)
+- *Used in*: `simple_queue`, `evolution_coop`
+- Every agent represents a real entity in the domain
+- Agents interact purely via events (no central orchestrator)
+- Emergent behavior from decentralized agent interactions
+- *Example*: Consumers and Resources interact directly through request/release events
+
+**Pattern B: Coordinator + Entity Agents** (Centralized Mechanism)
+- *Used in*: `zi_traders`, `evolving_market`, `lloyds_insurance`, `insurance_cycles`
+- Coordinator implements system rules/mechanism
+- Coordinator maintains shared state (order book, active participants, market clearing)
+- Entities respond to coordinator events
+- Coordinator handles turn-taking, resource allocation, rule enforcement
+- *Example*: Market coordinator manages order book, traders submit bids/asks
+
+**Trade-offs**:
+- ✅ Pattern B matches domain model when mechanism ≠ participant (markets, auctions, games)
+- ✅ Clear separation of concerns between mechanism and participants
+- ⚠️ Broadcast overhead (coordinator receives all events, must filter)
+- ⚠️ Shadow state maintenance (coordinator tracks participant state)
+
+**Design guidance**: Use Pattern A for fully decentralized systems (interacting entities). Use Pattern B when the domain has an explicit central mechanism (market, auction house, game referee).
+
+### Event Processing Patterns
+
+#### 5. Event Filtering Pattern
+**Agents receive ALL events via broadcast; filter for relevant ones.**
+
+```rust
+// Check event relevance
+if rid != &self.resource_id {
+    return des::Response::new(); // Ignore irrelevant events
+}
+
+// Player only processes events where they're a participant
+if *player_a_id == self.id || *player_b_id == self.id {
+    // Process event
+} else {
+    des::Response::new() // Ignore
+}
+```
+
+**Implication**: Every agent sees every event. Efficient filtering in the `act()` method is critical for performance.
+
+#### 6. Time-Delta Event Scheduling Pattern
+**Events are always scheduled relative to `current_t`, never as absolute times.**
+
+```rust
+des::Response::event(current_t + 1, Event::RoundComplete { ... })
+des::Response::event(current_t + arrival_interval, Event::ResourceRequested(...))
+```
+
+**Consistent timing rule**: Coordinators use `current_t + 1` for next iteration events to maintain deterministic ordering.
+
+#### 7. Lifecycle Event Pattern
+**Simulations have structured start/iteration/end events.**
+
+Common patterns across modules:
+- **Start events**: `TournamentStart`, `SessionStart`, `YearStart`, `Day`
+- **Iteration events**: `RoundStart`, `Month`, `Year`, `Step`
+- **End events**: `TournamentComplete`, `YearEnd`, `RunEnd`
+
+**Purpose**: Clear simulation phases enable agent initialization, iteration, and cleanup logic.
+
+### Behavioral Patterns
+
+#### 8. Stochastic Behavior via Distribution Sampling
+**Agents use `rand_distr` for probabilistic decision-making.**
+
+Examples across modules:
+- `simple_queue`: `Geometric` (arrivals), `Normal` (service times)
+- `evolving_market`: `stochastic_auction()` for rule selection with noise and trembling hand
+- `lloyds_insurance`: `Gamma` (claim amounts), `Poisson` (catastrophe events)
+- `insurance_cycles`: `Gamma` (claim distribution)
+
+**Pattern**: RNGs are agent-owned fields (`self.rng`), often seeded for reproducibility in tests.
+
+#### 9. Reinforcement Learning Classifier System Pattern
+**Adaptive agents learn through rule-based reinforcement learning.**
+
+*Used in*: `evolving_market` (Kirman & Vriend model)
+
+**Components**:
+```rust
+pub struct Rule<C, A> {
+    pub condition: C,
+    pub action: A,
+    pub strength: f64,  // Updated via EWMA
+}
+```
+
+**Mechanisms**:
+- `stochastic_auction()` - Probabilistic rule selection with exploration noise
+- `update_strength()` - EWMA-based learning: `s(t) = (1-c)*s(t-1) + c*reward`
+- `update_loyalty()` - Relationship dynamics: `L(t) = L(t-1)/(1+α) + (α if visited)`
+
+**Application**: Buyers learn which sellers to visit; sellers learn pricing strategies based on loyalty and market state.
+
+### State Management Patterns
+
+#### 10. Structured State Management (Coordinators)
+**Coordinators use `HashMap`/`HashSet` for O(1) lookups, avoiding linear searches.**
+
+```rust
+// zi_traders Coordinator
+active_traders: HashSet<usize>,        // O(1) membership test
+trader_inventories: HashMap<usize, Vec<Unit>>, // O(1) inventory lookup
+best_bid: Option<Order>,
+best_ask: Option<Order>,
+
+// evolution_coop TournamentCoordinator
+current_matches: HashMap<usize, MatchState>,  // O(1) match lookup
+```
+
+**Anti-pattern**: Avoid `Vec` linear scans for participant tracking in coordinators.
+
+#### 11. Shadow State Pattern
+**Coordinators maintain copies of participant state for orchestration.**
+
+Examples:
+- `insurance_cycles::MarketCoordinator`: Tracks insurer capital for capacity constraints
+- `lloyds_insurance::CentralRiskRepository`: Tracks policies and quotes
+- `zi_traders::Coordinator`: Tracks trader inventories
+
+**Critical requirement**: Shadow state must match sum of individual agent stats. Validated via integration tests like `test_shadow_state_consistency`.
+
+#### 12. Time Series Collection Pattern
+**Stats include bounded history vectors for analysis.**
+
+```rust
+pub struct SystemStats {
+    pub price_history: Vec<f64>,
+    pub leverage_history: Vec<f64>,
+    // Bounded to last N values or full simulation
+}
+
+pub struct InsurerStats {
+    pub price_history: Vec<f64>,      // Last 2 years for elasticity
+    pub quantity_history: Vec<usize>, // Last 2 years
+}
+```
+
+**Use cases**:
+- Autocorrelation analysis (`insurance_cycles::autocorrelation()`)
+- Cycle detection (`has_cycles()`, `cycle_period()`, `dominant_frequency()`)
+- AR(2) model fitting (`fit_ar2()`) for validation against theoretical predictions
+
+### Code Organization Patterns
+
+#### 13. Domain Logic Helper Functions
+**Common calculations extracted to module-level pure functions.**
+
+Examples:
+- `evolution_coop::calculate_payoff()` - Prisoner's Dilemma payoff matrix
+- `evolving_market::update_loyalty()`, `update_strength()`, `stochastic_auction()`
+- `insurance_cycles::MarketStats::calculate_herfindahl()`, `calculate_gini()`
+
+**Benefits**: Functions are testable in isolation, reusable across agents, and clearly document domain logic.
+
+#### 14. Configuration Struct Pattern
+**Each module defines a `Config` or `ModelConfig` struct with scenario presets.**
+
+```rust
+impl ModelConfig {
+    pub fn baseline() -> Self { ... }
+    pub fn scenario_1() -> Self { ... }  // From paper
+    pub fn low_beta() -> Self { ... }     // Parameter variation
+}
+```
+
+**Features**:
+- All simulation parameters centralized in one struct
+- Named scenarios matching research papers
+- Helper methods for derived parameters (`gamma_shape()`, `gamma_scale()`)
+
+#### 15. Module Organization Pattern
+**Complex simulations split across focused modules.**
+
+Typical structure:
+- `lib.rs` - Core types (Event, Stats, Config), domain logic functions
+- `coordinator.rs` - Orchestration agent (Pattern B architectures)
+- `agents.rs` / specific agent files - Entity agent implementations
+- `helpers.rs` - Utility functions (geometry, distributions, etc.)
+- `analysis.rs` / `output.rs` - Post-processing and metrics
+
+**Examples**:
+- `evolving_market`: `lib.rs`, `agents.rs`, `coordinator.rs`
+- `lloyds_insurance`: 16 modules (one per agent type + shared components)
+- `insurance_cycles`: `lib.rs`, `insurer.rs`, `market_coordinator.rs`, `helpers.rs`, `output.rs`
+
+### Testing Patterns
+
+#### 16. Testing via Stats Interface
+**Tests verify agent behavior through Stats, not internal state.**
+
+```rust
+#[test]
+fn given_full_resource_when_consumer_requests_then_queued() {
+    let mut resource = Resource::new(0, 1);
+    resource.act(10, &Event::ResourceRequested(0, 1));
+
+    let s = resource.stats();
+    assert!(s.is_at_capacity()); // Test via Stats
+
+    resource.act(15, &Event::ResourceRequested(0, 2));
+
+    let s = resource.stats();
+    assert_eq!(s.current_queue_length, 1); // Observable state
+}
+```
+
+**Philosophy**: Stats = observable behavior; internal state = implementation detail. This approach:
+- Maintains encapsulation (agent internals remain private)
+- Aligns with event sourcing (Stats = projection of event stream)
+- Enables refactoring (can change internal data structures without breaking tests)
+- Documents observable behavior (Stats shows what the simulation measures)
+
+#### 17. Multi-Phase Market Clearing Pattern
+**Coordinator simulations use request-consolidate-select-notify cycles.**
+
+*Used in*: `lloyds_insurance`, `evolving_market`
+
+**Example** (Lloyd's insurance quote process):
+1. **Request phase**: `LeadQuoteRequested` broadcast to syndicates
+2. **Consolidation deadline**: `LeadQuoteConsolidationDeadline` triggers broker evaluation
+3. **Selection phase**: Broker chooses best quote from received offers
+4. **Notification phase**: `LeadQuoteAccepted` broadcast confirms winner
+
+**Timing convention**: Each phase scheduled at `current_t + 1` to maintain deterministic event ordering.
+
+### Meta-Patterns Across All Modules
+
+1. **Event Sourcing**: Events are the source of truth; state is derived from event stream
+2. **Broadcast + Filter**: All agents receive all events, filter locally in `act()` method
+3. **Stats as Projection**: Public observable state (Stats) vs. private implementation details
+4. **Coordinator Shadow State**: Centralized orchestration requires state duplication + validation
+5. **Determinism via Seeding**: Tests use seeded RNGs for reproducibility
+6. **Configuration as Code**: Research paper scenarios encoded as `Config` presets
+
+### Design Guidelines for New Implementations
+
+When implementing a new research paper:
+
+1. **Choose architecture deliberately**:
+   - All-Entity (Pattern A) for decentralized systems
+   - Coordinator + Entity (Pattern B) for centralized mechanisms
+
+2. **Design Stats first**: What needs to be observable for validation against paper results?
+
+3. **Extract domain logic**: Pure functions for payoffs, updates, selections (testable in isolation)
+
+4. **Use efficient data structures**: HashMap/HashSet for participant lookups, never linear Vec scans
+
+5. **Test via Stats interface**: Maintain encapsulation, verify observable behavior matches paper
+
+6. **Document coordinator rationale**: If using Pattern B, explain why coordinator is an Agent (see CLAUDE.md)
+
+7. **Provide scenario configs**: Encode paper's experimental setups as named Config presets
+
+8. **Collect time series**: Include history vectors in Stats for validation via autocorrelation, cycle detection, convergence analysis
+
+---
+
 ## Reading
 
 [ABMs in economics and finance (Axtell and Farmer, 2025)](https://ora.ox.ac.uk/objects/uuid:8af3b96e-a088-4e29-ba1e-0760222277b7/files/s6969z182c)
