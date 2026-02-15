@@ -7,7 +7,7 @@ Your task is to implement a research paper following instructions in the prior-a
 
 Use first principles and use pseudo-code in the prior art as a guide rather than something follow precisely.
 
-Use tests to iteratively confirm the paper is being implemented correctly.
+Use tests and expected outcomes to iteratively confirm the paper is being implemented correctly.
 Planning a testing strategy will be important to support this.
 
 Use clippy and other rust tools to help you.
