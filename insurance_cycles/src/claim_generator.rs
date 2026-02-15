@@ -3,6 +3,13 @@
 //! Generates stochastic claims:
 //! - Bernoulli(b) × Gamma(μ, σ) claims
 //! - Random timing during year
+//!
+//! **Design Note**: ClaimGenerator exists as a separate agent (rather than being
+//! part of insurers or coordinator) for several reasons:
+//! 1. Maintains independent RNG seed for reproducibility of claim patterns
+//! 2. Separates stochastic claim mechanism from deterministic pricing logic
+//! 3. Enables future extension to correlated claims (catastrophes affecting multiple insurers)
+//! 4. Makes the claim generation process explicit and testable in isolation
 
 use crate::{Event, ModelConfig, Stats, DAYS_PER_YEAR};
 use des::{Agent, Response};

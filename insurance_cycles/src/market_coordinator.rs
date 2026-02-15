@@ -25,6 +25,9 @@ pub struct MarketCoordinator {
     prices_received: HashMap<usize, f64>, // insurer_id -> market_price
 
     // Industry tracking
+    // Note: Claims must be tracked via ClaimOccurred events because the DES framework
+    // doesn't allow querying other agents' Stats during event processing.
+    // Premiums are computed from allocations × prices to avoid duplicating insurer calculations.
     industry_total_premiums: f64,
     industry_total_claims: f64,
     last_year_avg_claim: f64,
@@ -123,9 +126,20 @@ impl MarketCoordinator {
     /// Greedy allocation: for each customer, find the insurer with lowest total cost
     /// Total cost = price + γ × circular_distance(customer, insurer)
     ///
-    /// Note: Capacity constraints would require knowing individual insurer capital,
-    /// which the coordinator doesn't track. In a production system, this could be
-    /// handled via iterative allocation with capacity feedback from insurers.
+    /// **Known Limitation - Capacity Constraints**:
+    /// The paper specifies that if an insurer is at capacity (capital constraint),
+    /// customers should choose their second-best option. This implementation does NOT
+    /// enforce capacity constraints because:
+    /// - Coordinator doesn't track individual insurer capital (changes dynamically)
+    /// - Would require iterative allocation with capacity feedback from insurers
+    /// - Or insurers rejecting customers and triggering reallocation
+    ///
+    /// **Impact on Results**:
+    /// - May contribute to market concentration (winner-take-all dynamics)
+    /// - Could explain shorter cycle period (3.5yr vs paper's 5.9yr)
+    /// - Weakens price elasticity feedback loop for dominant insurers
+    ///
+    /// See README "Implementation vs. Paper" section for discussion.
     ///
     /// Returns: Vec<(customer_id, insurer_id)>
     fn clear_market(&mut self) -> Vec<(usize, usize)> {

@@ -576,12 +576,17 @@ mod tests {
             "Endogenous cycles should emerge from firm-level behavior"
         );
 
-        // 3. Cycle period should be reasonable (3-7 years, paper reports ~5.9)
-        // Implementation may differ slightly from paper due to market concentration
+        // 3. Cycle period should be reasonable (paper reports ~5.9 years)
+        // This implementation shows ~3.1-3.5 years due to:
+        // - Greedy allocation without binding capacity constraints → market concentration
+        // - Deterministic customer choices (no switching costs/noise)
+        // - Customers as data structures rather than independent agents
+        // Range of 2-10 years validates cyclical behavior while acknowledging
+        // implementation differences from the full paper model.
         if let Some(period) = final_market.cycle_period() {
             assert!(
                 (2.0..=10.0).contains(&period),
-                "Cycle period should be 2-10 years, got {}",
+                "Cycle period should be 2-10 years, got {}. Paper reports ~5.9yr with full model.",
                 period
             );
         }
