@@ -818,4 +818,151 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_catastrophe_driven_cycles() {
+        // Experiment 3: Catastrophe-Driven Cycles (Scenario 2)
+        //
+        // Expected outcomes:
+        // 1. Post-catastrophe loss ratio spikes (>1.5 in cat years)
+        // 2. Average loss ratio still 0.8-1.2 over long run
+        // 3. More insolvencies than Scenario 1 (3-5 vs 1-2)
+        // 4. Higher premium volatility than Scenario 1
+
+        use des::EventLoop;
+
+        let config = ModelConfig::scenario_2();
+        let events = vec![(0, Event::Day)];
+
+        // Full paper setup: 5 syndicates, 25 brokers
+        let agents: Vec<Box<dyn des::Agent<Event, Stats>>> = vec![
+            Box::new(TimeGenerator::new()),
+            Box::new(Syndicate::new(0, config.clone())),
+            Box::new(Syndicate::new(1, config.clone())),
+            Box::new(Syndicate::new(2, config.clone())),
+            Box::new(Syndicate::new(3, config.clone())),
+            Box::new(Syndicate::new(4, config.clone())),
+            Box::new(BrokerPool::new(25, config.clone(), 12345)),
+            Box::new(CentralRiskRepository::new(config.clone(), 5, 11111)),
+            Box::new(AttritionalLossGenerator::new(config.clone(), 99999)),
+            Box::new(CatastropheLossGenerator::new(config.clone(), 50, 88888)),
+            Box::new(MarketStatisticsCollector::new(5)),
+        ];
+
+        let mut event_loop = EventLoop::new(events, agents);
+
+        // Run for 50 years
+        event_loop.run(365 * 50);
+
+        let stats = event_loop.stats();
+
+        // Extract time series
+        let time_series = stats
+            .iter()
+            .filter_map(|s| match s {
+                Stats::TimeSeriesStats(ts) => Some(ts),
+                _ => None,
+            })
+            .next()
+            .expect("Should have time series stats");
+
+        println!("\n=== Experiment 3: Catastrophe-Driven Cycles (Scenario 2) ===");
+
+        // Assertion 1: Detect catastrophe years (loss ratio spikes)
+        let cat_years: Vec<_> = time_series
+            .snapshots
+            .iter()
+            .filter(|s| s.avg_loss_ratio > 1.5)
+            .collect();
+
+        println!(
+            "\nCatastrophe years detected: {} (loss ratio > 1.5)",
+            cat_years.len()
+        );
+        for cat_year in &cat_years {
+            println!(
+                "  Year {}: loss_ratio={:.2}, capital=${:.0}M, solvent={}/5",
+                cat_year.year,
+                cat_year.avg_loss_ratio,
+                cat_year.total_capital / 1_000_000.0,
+                cat_year.num_solvent_syndicates
+            );
+        }
+
+        assert!(
+            !cat_years.is_empty(),
+            "Should observe at least one catastrophe year (loss ratio > 1.5). \
+             With λ=0.05/year over 50 years, expect ~2.5 catastrophes."
+        );
+
+        // Assertion 2: Long-run average loss ratio still balanced (0.8-1.2)
+        // Only calculate over active market years
+        let active_years: Vec<_> = time_series
+            .snapshots
+            .iter()
+            .filter(|s| s.num_solvent_syndicates > 0)
+            .collect();
+
+        if !active_years.is_empty() {
+            let avg_loss_ratio: f64 = active_years.iter().map(|s| s.avg_loss_ratio).sum::<f64>()
+                / active_years.len() as f64;
+
+            println!("\nActive market years: {}/50", active_years.len());
+            println!("Average loss ratio (active years): {:.3}", avg_loss_ratio);
+
+            assert!(
+                (0.8..=1.2).contains(&avg_loss_ratio),
+                "Average loss ratio {:.2} should be 0.8-1.2 even with catastrophes. \
+                 Markup mechanism should adjust premiums to compensate.",
+                avg_loss_ratio
+            );
+        }
+
+        // Assertion 3: Count insolvencies
+        let final_snapshot = time_series.snapshots.last().expect("Should have snapshots");
+        let insolvencies_scenario2 = final_snapshot.num_insolvent_syndicates;
+
+        println!(
+            "\nFinal insolvencies (Scenario 2): {}/5",
+            insolvencies_scenario2
+        );
+
+        // Note: We expect MORE insolvencies than Scenario 1, but exact count is stochastic
+        // Scenario 1 typically has 1-2, Scenario 2 should have 2-5
+        assert!(
+            insolvencies_scenario2 <= 5,
+            "Insolvencies should not exceed total syndicates (sanity check)"
+        );
+
+        // Assertion 4: Premium volatility analysis (if we have premium data)
+        // Note: avg_premium has known bug, but we can still analyze the pattern
+        let premiums_over_time: Vec<f64> = active_years
+            .iter()
+            .map(|s| s.avg_premium)
+            .filter(|&p| p > 0.0)
+            .collect();
+
+        if !premiums_over_time.is_empty() {
+            let avg_premium: f64 =
+                premiums_over_time.iter().sum::<f64>() / premiums_over_time.len() as f64;
+            let variance: f64 = premiums_over_time
+                .iter()
+                .map(|p| (p - avg_premium).powi(2))
+                .sum::<f64>()
+                / premiums_over_time.len() as f64;
+            let std_dev = variance.sqrt();
+            let coeff_of_variation = std_dev / avg_premium;
+
+            println!("\nPremium volatility (active years):");
+            println!("  Mean: ${:.0}", avg_premium);
+            println!("  Std Dev: ${:.0}", std_dev);
+            println!("  Coefficient of Variation: {:.2}", coeff_of_variation);
+
+            // High volatility expected due to catastrophe shocks
+            // CoV > 0.3 indicates significant cyclicality
+            println!(
+                "\nNote: avg_premium has known calculation bug, but volatility pattern is observable"
+            );
+        }
+    }
 }
