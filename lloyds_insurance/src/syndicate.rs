@@ -15,15 +15,27 @@ pub struct Syndicate {
     annual_premiums: f64,
     annual_claims: f64,
     annual_policies_written: usize,
+    annual_claims_count: usize,
 
     // Underwriting markup: exponentially weighted moving average of market conditions
     // m_t captures competitive pressure based on loss experience
     markup_m_t: f64,
+
+    // Dynamic industry statistics (updated annually from MarketStatisticsCollector)
+    // These replace the hardcoded config values for actuarial pricing
+    industry_lambda_t: f64, // Industry-wide claim frequency (claims per policy)
+    industry_mu_t: f64,     // Industry-wide average claim cost
+    years_elapsed: usize,   // Track years for warmup period
 }
 
 impl Syndicate {
     pub fn new(syndicate_id: usize, config: ModelConfig) -> Self {
         let initial_capital = config.initial_capital;
+        // Initialize with config defaults until first market stats are available
+        // NOTE: Config values are per-risk, but we interpret them as per-participation initially
+        // This means we assume default lead line size for initialization
+        let industry_lambda_t = config.yearly_claim_frequency; // Claims per participation ≈ claims per risk
+        let industry_mu_t = config.gamma_mean * config.default_lead_line_size; // Avg claim for 50% line
         Self {
             syndicate_id,
             config,
@@ -35,25 +47,34 @@ impl Syndicate {
             annual_premiums: 0.0,
             annual_claims: 0.0,
             annual_policies_written: 0,
+            annual_claims_count: 0,
             markup_m_t: 0.0, // Start at 0 (no markup, e^0 = 1)
+            industry_lambda_t,
+            industry_mu_t,
+            years_elapsed: 0,
         }
     }
 
-    fn calculate_actuarial_price(&self, _risk_id: usize, industry_avg_loss: f64) -> f64 {
+    fn calculate_actuarial_price(
+        &self,
+        _risk_id: usize,
+        industry_avg_loss_per_participation: f64,
+    ) -> f64 {
         // Simplified actuarial pricing: P̃_t = z·X̄_t + (1-z)·λ'_t·μ'_t
-        // where:
-        // - industry_avg_loss = λ'_t·μ'_t = yearly_claim_frequency × gamma_mean
-        // - loss_history contains CLAIM AMOUNTS (not per-policy losses)
-        // - We need to convert claim amounts to per-policy expected loss by multiplying by frequency
+        //
+        // ALL values are interpreted as PER-PARTICIPATION:
+        // - industry_avg_loss_per_participation = industry_lambda_t × industry_mu_t
+        // - Where industry_mu_t is average claim amount received (line-share adjusted)
+        // - And industry_lambda_t is claim frequency per participation
+        //
+        // This matches how syndicates calculate their own experience (based on participations)
 
         let z = self.config.internal_experience_weight;
-        let line_size = self.config.default_lead_line_size;
         let claim_freq = self.config.yearly_claim_frequency;
 
-        // Syndicate's average CLAIM AMOUNT (from loss_history)
-        // Then multiply by frequency to get expected loss per policy
+        // Syndicate's own experience (expected loss per participation based on own data)
         let syndicate_expected_loss = if !self.loss_history.is_empty() {
-            // Exponentially weighted moving average of CLAIM AMOUNTS
+            // Exponentially weighted moving average of CLAIM AMOUNTS (line-share adjusted)
             let weight = self.config.loss_recency_weight;
             let mut weighted_sum = 0.0;
             let mut total_weight = 0.0;
@@ -63,21 +84,20 @@ impl Syndicate {
                 total_weight += w;
             }
             let avg_claim_amount = weighted_sum / total_weight;
-            // Convert to expected loss per policy: E[loss] = P(claim) × E[amount | claim]
-            // Note: avg_claim_amount is already the syndicate's line share (from loss_history)
+            // Convert to expected loss per participation: E[loss] = P(claim) × E[amount | claim]
             avg_claim_amount * claim_freq
         } else {
-            // No history yet - use industry average
-            industry_avg_loss * line_size
+            // No history yet - use industry average (already per-participation)
+            industry_avg_loss_per_participation
         };
 
-        // Industry expected loss per policy (for our line share)
-        let industry_expected_loss = industry_avg_loss * line_size;
+        // Industry expected loss per participation (use directly)
+        let industry_expected_loss = industry_avg_loss_per_participation;
 
-        // Combine syndicate and industry experience (both are expected loss per policy now)
+        // Combine syndicate and industry experience
         let base_price = z * syndicate_expected_loss + (1.0 - z) * industry_expected_loss;
 
-        // Add volatility loading (simplified - using constant for now)
+        // Add volatility loading
         let volatility_loading = self.config.volatility_weight * base_price;
 
         base_price + volatility_loading
@@ -97,8 +117,8 @@ impl Syndicate {
         risk_id: usize,
         current_t: usize,
     ) -> Vec<(usize, Event)> {
-        // Use default industry average for now (will be updated with real stats later)
-        let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
+        // Use dynamic industry statistics (updated annually from market data)
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
         let line_size = self.config.default_lead_line_size;
 
         // Calculate actuarial price and apply underwriting markup
@@ -118,7 +138,7 @@ impl Syndicate {
 
     fn handle_lead_accepted(&mut self, risk_id: usize) {
         // Record premium - must match what we quoted
-        let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
         let line_size = self.config.default_lead_line_size;
 
         // Calculate actuarial price and apply underwriting markup (must match quote)
@@ -166,7 +186,7 @@ impl Syndicate {
 
     fn handle_follow_accepted(&mut self, risk_id: usize, line_size: f64) {
         // Calculate premium for our follow share
-        let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
 
         // For followers, we use the same pricing logic but with the follow line size
         // (which is passed in, not the default)
@@ -199,6 +219,7 @@ impl Syndicate {
         self.capital -= amount;
         self.loss_history.push(amount);
         self.annual_claims += amount;
+        self.annual_claims_count += 1;
 
         self.stats.total_claims_paid += amount;
         self.stats.num_claims += 1;
@@ -218,6 +239,9 @@ impl Syndicate {
     }
 
     fn handle_year_end(&mut self) {
+        // Track years for warmup period
+        self.years_elapsed += 1;
+
         // Update underwriting markup BEFORE checking insolvency
         // Even insolvent syndicates update their market view (though they won't quote)
         self.update_underwriting_markup();
@@ -227,6 +251,7 @@ impl Syndicate {
             self.annual_premiums = 0.0;
             self.annual_claims = 0.0;
             self.annual_policies_written = 0;
+            self.annual_claims_count = 0;
             return;
         }
 
@@ -247,6 +272,7 @@ impl Syndicate {
         self.annual_premiums = 0.0;
         self.annual_claims = 0.0;
         self.annual_policies_written = 0;
+        self.annual_claims_count = 0;
     }
 
     fn update_underwriting_markup(&mut self) {
@@ -296,6 +322,7 @@ impl Agent<Event, Stats> for Syndicate {
             let annual_premiums = self.annual_premiums;
             let annual_claims = self.annual_claims;
             let annual_policies_written = self.annual_policies_written;
+            let annual_claims_count = self.annual_claims_count;
 
             self.handle_year_end();
             self.update_stats();
@@ -309,6 +336,7 @@ impl Agent<Event, Stats> for Syndicate {
                     annual_premiums,
                     annual_claims,
                     num_policies: annual_policies_written,
+                    num_claims: annual_claims_count,
                 },
             )]);
         }
@@ -357,6 +385,30 @@ impl Agent<Event, Stats> for Syndicate {
                 self.update_stats();
                 Response::new()
             }
+            Event::IndustryLossStatsReported {
+                avg_claim_frequency,
+                avg_claim_cost,
+            } => {
+                // Update our view of industry-wide loss statistics using EWMA to smooth noise
+                // Use a warmup period (first 3 years) to avoid early random variation causing mispricing
+
+                // EWMA weight: give more weight to historical values initially to avoid
+                // early year random variation causing systematic mispricing
+                let alpha = if self.years_elapsed == 0 {
+                    0.1 // Year 0: use only 10% of new data (small sample, high variance)
+                } else if self.years_elapsed < 5 {
+                    0.2 // Years 1-4: use 20% of new data, 80% of historical
+                } else {
+                    0.4 // Years 5+: use 40% of new data (more responsive to market changes)
+                };
+
+                // Update with exponential smoothing
+                self.industry_lambda_t =
+                    alpha * avg_claim_frequency + (1.0 - alpha) * self.industry_lambda_t;
+                self.industry_mu_t = alpha * avg_claim_cost + (1.0 - alpha) * self.industry_mu_t;
+
+                Response::new()
+            }
             _ => Response::new(),
         }
     }
@@ -375,14 +427,16 @@ mod tests {
         let config = ModelConfig::default();
         let syndicate = Syndicate::new(0, config.clone());
 
-        // With no history, should use industry average scaled by line size
-        let industry_avg = config.gamma_mean * config.yearly_claim_frequency;
-        let line_size = config.default_lead_line_size;
-        let base_price = industry_avg * line_size;
+        // With no history, should use industry average (per-participation)
+        // Syndicate is initialized with per-participation industry stats:
+        // industry_mu_t = gamma_mean × default_lead_line_size = $3M × 0.5 = $1.5M
+        // industry_lambda_t = yearly_claim_frequency = 0.1
+        let industry_avg_per_participation = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let base_price = industry_avg_per_participation; // $150k
         let volatility_loading = config.volatility_weight * base_price;
         let expected_price = base_price + volatility_loading;
 
-        let price = syndicate.calculate_actuarial_price(1, industry_avg);
+        let price = syndicate.calculate_actuarial_price(1, industry_avg_per_participation);
 
         // Price should equal base price plus volatility loading
         // With volatility_weight=0.2: $150k base + $30k loading = $180k

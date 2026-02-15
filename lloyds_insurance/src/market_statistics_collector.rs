@@ -35,6 +35,7 @@ struct SyndicateReport {
     annual_premiums: f64,
     annual_claims: f64,
     num_policies: usize, // Annual policies written (not cumulative)
+    num_claims: usize,   // Annual claims received (not cumulative)
 }
 
 impl MarketStatisticsCollector {
@@ -66,7 +67,8 @@ impl MarketStatisticsCollector {
         annual_premiums: f64,
         annual_claims: f64,
         num_policies: usize,
-    ) {
+        num_claims: usize,
+    ) -> Vec<(usize, Event)> {
         // Store the report
         self.pending_reports.insert(
             syndicate_id,
@@ -76,16 +78,19 @@ impl MarketStatisticsCollector {
                 annual_premiums,
                 annual_claims,
                 num_policies,
+                num_claims,
             },
         );
 
         // Check if we have all reports
         if self.pending_reports.len() == self.num_syndicates {
-            self.create_snapshot();
+            self.create_snapshot()
+        } else {
+            Vec::new()
         }
     }
 
-    fn create_snapshot(&mut self) {
+    fn create_snapshot(&mut self) -> Vec<(usize, Event)> {
         // Calculate aggregate statistics
         let total_capital: f64 = self.pending_reports.values().map(|r| r.capital).sum();
         let num_solvent = self
@@ -104,6 +109,8 @@ impl MarketStatisticsCollector {
         let total_annual_claims: f64 = self.pending_reports.values().map(|r| r.annual_claims).sum();
         let total_annual_policies: usize =
             self.pending_reports.values().map(|r| r.num_policies).sum();
+        let total_annual_claims_count: usize =
+            self.pending_reports.values().map(|r| r.num_claims).sum();
 
         // Average premium per policy (market-wide) for this year
         let avg_premium = if total_annual_policies > 0 {
@@ -115,6 +122,27 @@ impl MarketStatisticsCollector {
         // Average loss ratio (market-wide)
         let avg_loss_ratio = if total_annual_premiums > 0.0 {
             total_annual_claims / total_annual_premiums
+        } else {
+            0.0
+        };
+
+        // Calculate industry-wide loss statistics from syndicate participations
+        //
+        // IMPORTANT: These statistics are PERPARTICIPATION, not per-risk:
+        // - industry_claim_frequency = claims received / participations
+        // - industry_avg_claim_cost = avg claim amount received (line-share adjusted)
+        //
+        // When syndicates use these for pricing, they should NOT multiply by line_size again,
+        // since the statistics already reflect participation-level expectations.
+
+        let industry_claim_frequency = if total_annual_policies > 0 {
+            total_annual_claims_count as f64 / total_annual_policies as f64
+        } else {
+            0.0
+        };
+
+        let industry_avg_claim_cost = if total_annual_claims_count > 0 {
+            total_annual_claims / total_annual_claims_count as f64
         } else {
             0.0
         };
@@ -134,6 +162,21 @@ impl MarketStatisticsCollector {
 
         // Clear pending reports after creating snapshot
         self.pending_reports.clear();
+
+        // Emit industry loss statistics and pricing statistics for syndicates to use
+        vec![
+            (
+                self.current_day,
+                Event::IndustryLossStatsReported {
+                    avg_claim_frequency: industry_claim_frequency,
+                    avg_claim_cost: industry_avg_claim_cost,
+                },
+            ),
+            (
+                self.current_day,
+                Event::IndustryPricingStatsReported { avg_premium },
+            ),
+        ]
     }
 }
 
@@ -150,15 +193,17 @@ impl Agent<Event, Stats> for MarketStatisticsCollector {
                 annual_premiums,
                 annual_claims,
                 num_policies,
+                num_claims,
             } => {
-                self.handle_syndicate_report(
+                let events = self.handle_syndicate_report(
                     *syndicate_id,
                     *capital,
                     *annual_premiums,
                     *annual_claims,
                     *num_policies,
+                    *num_claims,
                 );
-                Response::new()
+                Response::events(events)
             }
             _ => Response::new(),
         }
@@ -197,6 +242,7 @@ mod tests {
                 annual_premiums: 1_000_000.0,
                 annual_claims: 800_000.0,
                 num_policies: 10,
+                num_claims: 1,
             },
         );
         collector.act(
@@ -207,6 +253,7 @@ mod tests {
                 annual_premiums: 1_200_000.0,
                 annual_claims: 900_000.0,
                 num_policies: 12,
+                num_claims: 1,
             },
         );
 
@@ -232,6 +279,7 @@ mod tests {
                 annual_premiums: 1_000_000.0,
                 annual_claims: 800_000.0,
                 num_policies: 10,
+                num_claims: 1,
             },
         ); // Solvent
         collector.act(
@@ -242,6 +290,7 @@ mod tests {
                 annual_premiums: 500_000.0,
                 annual_claims: 1_000_000.0,
                 num_policies: 5,
+                num_claims: 2,
             },
         ); // Insolvent
         collector.act(
@@ -252,6 +301,7 @@ mod tests {
                 annual_premiums: 900_000.0,
                 annual_claims: 700_000.0,
                 num_policies: 9,
+                num_claims: 1,
             },
         ); // Solvent
 
@@ -275,6 +325,7 @@ mod tests {
                 annual_premiums: 1_000_000.0,
                 annual_claims: 800_000.0,
                 num_policies: 10,
+                num_claims: 1,
             },
         );
         collector.act(
@@ -285,6 +336,7 @@ mod tests {
                 annual_premiums: 1_200_000.0,
                 annual_claims: 900_000.0,
                 num_policies: 12,
+                num_claims: 1,
             },
         );
         // Snapshot 1 created when all year 1 reports received
@@ -300,6 +352,7 @@ mod tests {
                 annual_premiums: 1_100_000.0,
                 annual_claims: 850_000.0,
                 num_policies: 11,
+                num_claims: 1,
             },
         );
         collector.act(
@@ -310,6 +363,7 @@ mod tests {
                 annual_premiums: 1_000_000.0,
                 annual_claims: 950_000.0,
                 num_policies: 10,
+                num_claims: 1,
             },
         );
         // Snapshot 2 created when all year 2 reports received
@@ -337,6 +391,7 @@ mod tests {
                 annual_premiums: 2_000_000.0, // 20 policies × $100k each
                 annual_claims: 1_600_000.0,   // Loss ratio = 0.8
                 num_policies: 20,
+                num_claims: 2,
             },
         );
         collector.act(
@@ -347,6 +402,7 @@ mod tests {
                 annual_premiums: 3_000_000.0, // 30 policies × $100k each
                 annual_claims: 2_400_000.0,   // Loss ratio = 0.8
                 num_policies: 30,
+                num_claims: 3,
             },
         );
 
