@@ -6,18 +6,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This project translates Agent-Based Model (ABM) research papers into modular Rust simulations using a Discrete Event Simulation (DES) framework. The goal is to recreate economic and social simulation models from academic literature (e.g., Axelrod's cooperation models, Kirman & Vriend's fish market, zero-intelligence traders) as concrete, runnable implementations.
 
+## Quick Start
+
+```bash
+# Build the workspace
+cargo build
+
+# Run tests
+cargo test
+
+# Run example simulation
+cargo run -p simple_queue
+
+# Run specific tests
+cargo test min_queue
+```
+
+## Repository Structure
+
+```
+abm/
+├── des/              # Core DES framework (generic event loop)
+├── simple_queue/     # Example: Bank counter simulation
+├── zi_traders/       # Example: Zero-intelligence trader market
+├── prior-art/        # Paper summaries for implementation
+└── CLAUDE.md         # This file
+```
+
 ## Prior Art Directory
 
 The `/prior-art` directory contains in-depth summaries of research papers that are candidates for implementation as simulations.
 
 **When to read these summaries:**
-- At the start of implementing a new simulation module based on a paper
-- Read the primary paper summary first, then related summaries for context (e.g., if implementing Kirman & Vriend, also review other market/agent papers)
+- **MUST READ**: Before implementing a simulation based on a paper (read the primary paper summary first, then related papers for context)
+- **Example**: Implementing Kirman & Vriend? Read `prior-art/kirman-vriend-2001.md` first, then related market/agent papers for additional context
 
-**When NOT to read these summaries:**
-- General questions about the codebase or DES framework
+**Skip these summaries when:**
+- Working on the DES framework itself
 - Debugging or refactoring existing simulations
-- Build/test issues
+- Build/test/tooling issues
+- General questions about the codebase
 
 These files are detailed and should be consulted deliberately when translating research into code.
 
@@ -59,219 +87,6 @@ Example: `simple_queue` implements a bank counter simulation where:
 - `ConsumerProcess` generates consumers with random arrival/service/wait times using probability distributions
 - `Resource` manages finite resource allocation with queueing and expiry
 - Events: `Start`, `ResourceRequested`, `ResourceAcquired`, `ResourceReleased`, `ResourceRequestExpired`
-
-## Auto-Approved Commands
-
-The following commands can be executed without requiring permission prompts. These are safe, commonly-used operations for this project.
-
-### Git Commands (Read-Only and Safe Operations)
-- `git status` - Check working tree status
-- `git diff` - View changes
-- `git log` - View commit history
-- `git show` - Show commit details
-- `git branch` - List/view branches
-- `git ls-files` - List tracked files
-- `git rev-parse` - Parse git revision info
-- `git describe` - Describe commits
-- `git tag` - List tags (read-only)
-
-### GitHub CLI Commands (Read-Only Operations)
-- `gh pr view` - View pull request details
-- `gh pr list` - List pull requests
-- `gh pr status` - Check PR status
-- `gh pr checks` - View PR check status
-- `gh issue view` - View issue details
-- `gh issue list` - List issues
-- `gh repo view` - View repository info
-- `gh workflow view` - View workflow details
-- `gh run list` - List workflow runs
-- `gh run view` - View workflow run details
-- `gh api` - Make read-only API calls
-
-### Cargo Commands
-- `cargo build` - Build the workspace or specific packages
-- `cargo build -p <package>` - Build specific package
-- `cargo test` - Run all tests
-- `cargo test <test_name>` - Run specific test
-- `cargo check` - Fast compilation check
-- `cargo clippy` - Run linter
-- `cargo fmt` - Format code
-- `cargo run` - Run simulations
-- `cargo run -p <package>` - Run specific package
-- `cargo tree` - View dependency tree
-- `cargo bench` - Run benchmarks
-- `cargo doc` - Generate documentation
-
-## Development Commands
-
-### Build and Test
-```bash
-# Build entire workspace
-cargo build
-
-# Build specific crate
-cargo build -p des
-cargo build -p simple_queue
-
-# Run tests (tests are in des/src/lib.rs)
-cargo test
-
-# Run clippy
-cargo clippy
-```
-
-### Run Simulations
-```bash
-# Run the simple_queue example
-cargo run -p simple_queue
-```
-
-### Run Single Test
-```bash
-# Run specific test by name
-cargo test it_works
-cargo test min_queue
-cargo test noddy_run
-```
-
-## Git Workflow and Commit Guidelines
-
-### NEVER Use `--no-verify` with Git Commits
-
-**CRITICAL**: Do NOT use `git commit --no-verify` or `git commit -n` to bypass pre-commit hooks. Pre-commit hooks exist to catch issues early and maintain code quality.
-
-If tests or checks in pre-commit hooks are taking too long:
-
-1. **Put long-running tests behind feature flags** instead of skipping them
-2. **Move expensive checks to CI** rather than pre-commit hooks
-3. **Optimize the slow tests** to run faster
-4. **Use `cargo test --lib`** for unit tests only if integration tests are slow
-
-**Why this matters**:
-- Bypassing hooks can commit broken code to the repository
-- It defeats the purpose of automated quality checks
-- It can break CI pipelines and block other developers
-- It creates technical debt that's harder to fix later
-
-**If you're tempted to use `--no-verify`**, that's a sign that your testing strategy needs improvement, not that the safety check should be skipped.
-
-Example of putting slow tests behind feature flags:
-
-```rust
-#[test]
-#[cfg(feature = "slow-tests")]
-fn expensive_simulation_convergence_test() {
-    // Long-running simulation test
-}
-```
-
-Then run quick tests normally:
-```bash
-cargo test
-```
-
-And run all tests (including slow ones) explicitly when needed:
-```bash
-cargo test --all-features
-```
-
-## Working with This Codebase
-
-### Adding New Simulations
-
-1. Create new crate in workspace (add to root `Cargo.toml` members)
-2. Add `des` dependency in new crate's `Cargo.toml`
-3. Define Event enum and Stats types in `lib.rs`
-4. Implement agents by implementing `des::Agent<Event, Stats>`
-5. Create `main.rs` with EventLoop initialization
-6. Focus on agent behavior design and event scheduling logic
-
-### Agent Design Patterns
-
-When implementing a simulation, choose between two patterns based on your domain model:
-
-#### Pattern 1: All-Entity Agents (Recommended Default)
-
-Use when all agents represent actual entities in the domain that make autonomous decisions.
-
-**Example**: `simple_queue`
-- `ConsumerProcess`: Generates consumer arrivals (entity behavior)
-- `Resource`: Bank counter managing capacity (entity in the system)
-
-**Characteristics**:
-- Every agent represents something in the real system
-- Agents interact via events (e.g., ResourceRequested, ResourceReleased)
-- No central orchestrator needed
-- Emergent behavior from agent interactions
-
-**When to use**:
-- Multi-agent systems where entities interact directly
-- Simulations modeling emergent phenomena
-- When there's no central coordinator in the real system
-
-#### Pattern 2: Coordinator + Entity Agents
-
-Use when the domain has a clear separation between mechanism and participants.
-
-**Example**: `zi_traders`
-- `Coordinator`: Market mechanism (orchestration, not a participant)
-- `Traders`: Actual market participants making decisions
-
-**Characteristics**:
-- Coordinator implements system rules/mechanism
-- Coordinator maintains shared state (order book, active participants)
-- Entities respond to coordinator events (OrderRequest, Transaction)
-- Coordinator handles turn-taking, resource allocation, rule enforcement
-
-**When to use**:
-- Simulations of markets, auctions, games (clear mechanism + participants)
-- When the paper/model explicitly separates mechanism from agents
-- When strict turn-taking or centralized state management is required
-
-**Tradeoffs**:
-- ✅ Matches domain model (mechanism vs participants)
-- ✅ Easier to enforce system rules centrally
-- ✅ Clear separation of concerns
-- ⚠️ Broadcast overhead (coordinator receives events it may ignore)
-- ⚠️ Shadow state maintenance (coordinator tracks participant state)
-- ⚠️ More complex event flow (request → response → notification cycles)
-
-**Implementation guidelines for Coordinator pattern**:
-- Coordinator receives ALL events via broadcast; filter for relevant ones
-- Use consistent event timing (schedule next iteration at `current_t + 1`)
-- Maintain per-participant state in HashMaps for O(1) lookups, not linear searches
-- Use `HashSet` for active participant tracking (O(1) add/remove vs Vec)
-- Add module documentation explaining why Coordinator is an Agent
-- Consider adding timeout detection for non-responding participants
-
-**Key insight**: The pattern choice should reflect the domain model. If the real system has a central mechanism (market, auction house, game referee), use Pattern 2. If the real system is fully decentralized (interacting entities), use Pattern 1.
-
-### Modifying the DES Core
-
-The `des` crate is intentionally minimal. Changes should:
-- Preserve the generic Event/Agent/Response architecture
-- Maintain time-ordering semantics (events in the past are filtered out)
-- Keep the dynamic agent spawning capability
-- Not break existing examples
-
-### Research Translation Process
-
-When translating research papers:
-1. Identify agent types and their state variables
-2. Map paper's events to Event enum variants
-3. Determine what statistics to track (Stats types)
-4. Implement agent decision-making logic in `act()` method
-5. Use probability distributions from `rand`/`rand_distr` for stochastic behavior
-6. Test with small-scale runs before full simulations
-
-## Key Implementation Details
-
-- **Time is discrete and measured in `usize`**: All temporal values are non-negative integers
-- **Events scheduled in the past are dropped**: See des/src/lib.rs:105-110
-- **Agents are trait objects**: Stored as `Vec<Box<dyn Agent<T, S>>>` for heterogeneous collections
-- **BinaryHeap ordering**: Event ordering is reversed (line 23) to create min-heap behavior
-- **Stats collection**: Call `event_loop.stats()` after `run()` to get `Vec<S>` from all agents
-- **Broadcast semantics**: All agents receive all events; agents filter by relevance (see Resource/ConsumerProcess pattern)
 
 ## Testing Philosophy: Stats as Observable State
 
@@ -395,6 +210,207 @@ impl ConsumerProcess {
 ```
 
 This enables testing stochastic behavior deterministically.
+
+## Auto-Approved Commands
+
+> **Note**: This section lists commands that are automatically approved for Claude Code. Human readers can skip this section.
+
+The following commands can be executed without requiring permission prompts. These are safe, commonly-used operations for this project.
+
+### Git Commands (Read-Only and Safe Operations)
+- `git status` - Check working tree status
+- `git diff` - View changes
+- `git log` - View commit history
+- `git show` - Show commit details
+- `git branch` - List/view branches
+- `git ls-files` - List tracked files
+- `git rev-parse` - Parse git revision info
+- `git describe` - Describe commits
+- `git tag` - List tags (read-only)
+
+### GitHub CLI Commands (Read-Only Operations)
+- `gh pr view` - View pull request details
+- `gh pr list` - List pull requests
+- `gh pr status` - Check PR status
+- `gh pr checks` - View PR check status
+- `gh issue view` - View issue details
+- `gh issue list` - List issues
+- `gh repo view` - View repository info
+- `gh workflow view` - View workflow details
+- `gh run list` - List workflow runs
+- `gh run view` - View workflow run details
+- `gh api` - Make read-only API calls
+
+### Cargo Commands
+- `cargo build` - Build the workspace or specific packages
+- `cargo build -p <package>` - Build specific package
+- `cargo test` - Run all tests
+- `cargo test <test_name>` - Run specific test
+- `cargo check` - Fast compilation check
+- `cargo clippy` - Run linter
+- `cargo fmt` - Format code
+- `cargo run` - Run simulations
+- `cargo run -p <package>` - Run specific package
+- `cargo tree` - View dependency tree
+- `cargo bench` - Run benchmarks
+- `cargo doc` - Generate documentation
+
+## Development Workflows
+
+### Common Tasks
+
+```bash
+# Build and test everything
+cargo build && cargo test
+
+# Run linter and formatter
+cargo clippy && cargo fmt
+
+# Run specific simulation
+cargo run -p simple_queue
+cargo run -p zi_traders
+
+# Build specific package
+cargo build -p des
+
+# Run specific test by name
+cargo test min_queue
+```
+
+## Git Workflow and Commit Guidelines
+
+### Pre-commit Hooks and Testing
+
+**Important**: Always run pre-commit hooks (`git commit` without `--no-verify`). These catch issues early and maintain code quality.
+
+If hooks are slow, improve the testing strategy rather than bypassing safety checks:
+
+1. **Put long-running tests behind feature flags** to separate quick validation from exhaustive testing
+2. **Move expensive checks to CI** rather than pre-commit hooks
+3. **Optimize slow tests** to run faster
+4. **Use `cargo test --lib`** for quick unit test feedback
+
+**Why pre-commit hooks matter**: They prevent broken code from entering the repository, maintain CI stability, and catch issues before they become expensive to fix. If hooks feel like friction, that's a signal to improve the test suite, not to skip validation.
+
+**Example**: Feature-flag slow tests:
+
+```rust
+#[test]
+#[cfg(feature = "slow-tests")]
+fn expensive_simulation_convergence_test() {
+    // Long-running simulation test
+}
+```
+
+Run quick tests during development:
+```bash
+cargo test
+```
+
+Run comprehensive tests before pushing:
+```bash
+cargo test --all-features
+```
+
+## Working with This Codebase
+
+### Adding New Simulations
+
+1. Create new crate in workspace (add to root `Cargo.toml` members)
+2. Add `des` dependency in new crate's `Cargo.toml`
+3. Define Event enum and Stats types in `lib.rs`
+4. Implement agents by implementing `des::Agent<Event, Stats>`
+5. Create `main.rs` with EventLoop initialization
+6. Focus on agent behavior design and event scheduling logic
+
+### Agent Design Patterns
+
+**TL;DR**: Use Pattern 1 (all-entity agents) by default. Only use Pattern 2 (coordinator + entities) when the domain has an explicit central mechanism (markets, auctions, games).
+
+When implementing a simulation, choose between two patterns based on your domain model:
+
+#### Pattern 1: All-Entity Agents (Recommended Default)
+
+Use when all agents represent actual entities in the domain that make autonomous decisions.
+
+**Example**: `simple_queue`
+- `ConsumerProcess`: Generates consumer arrivals (entity behavior)
+- `Resource`: Bank counter managing capacity (entity in the system)
+
+**Characteristics**:
+- Every agent represents something in the real system
+- Agents interact via events (e.g., ResourceRequested, ResourceReleased)
+- No central orchestrator needed
+- Emergent behavior from agent interactions
+
+**When to use**:
+- Multi-agent systems where entities interact directly
+- Simulations modeling emergent phenomena
+- When there's no central coordinator in the real system
+
+#### Pattern 2: Coordinator + Entity Agents
+
+Use when the domain has a clear separation between mechanism and participants.
+
+**Example**: `zi_traders`
+- `Coordinator`: Market mechanism (orchestration, not a participant)
+- `Traders`: Actual market participants making decisions
+
+**Characteristics**:
+- Coordinator implements system rules/mechanism
+- Coordinator maintains shared state (order book, active participants)
+- Entities respond to coordinator events (OrderRequest, Transaction)
+- Coordinator handles turn-taking, resource allocation, rule enforcement
+
+**When to use**:
+- Simulations of markets, auctions, games (clear mechanism + participants)
+- When the paper/model explicitly separates mechanism from agents
+- When strict turn-taking or centralized state management is required
+
+**Tradeoffs**:
+- ✅ Matches domain model (mechanism vs participants)
+- ✅ Easier to enforce system rules centrally
+- ✅ Clear separation of concerns
+- ⚠️ Broadcast overhead (coordinator receives events it may ignore)
+- ⚠️ Shadow state maintenance (coordinator tracks participant state)
+- ⚠️ More complex event flow (request → response → notification cycles)
+
+**Implementation guidelines for Coordinator pattern**:
+- Coordinator receives ALL events via broadcast; filter for relevant ones
+- Use consistent event timing (schedule next iteration at `current_t + 1`)
+- Maintain per-participant state in HashMaps for O(1) lookups, not linear searches
+- Use `HashSet` for active participant tracking (O(1) add/remove vs Vec)
+- Add module documentation explaining why Coordinator is an Agent
+- Consider adding timeout detection for non-responding participants
+
+**Key insight**: The pattern choice should reflect the domain model. If the real system has a central mechanism (market, auction house, game referee), use Pattern 2. If the real system is fully decentralized (interacting entities), use Pattern 1.
+
+### Modifying the DES Core
+
+The `des` crate is intentionally minimal. Changes should:
+- Preserve the generic Event/Agent/Response architecture
+- Maintain time-ordering semantics (events in the past are filtered out)
+- Keep the dynamic agent spawning capability
+- Not break existing examples
+
+### Research Translation Process
+
+When translating research papers:
+1. Identify agent types and their state variables
+2. Map paper's events to Event enum variants
+3. Determine what statistics to track (Stats types)
+4. Implement agent decision-making logic in `act()` method
+5. Use probability distributions from `rand`/`rand_distr` for stochastic behavior
+6. Test with small-scale runs before full simulations
+
+## Key Implementation Details
+
+- **Time is discrete and measured in `usize`**: All temporal values are non-negative integers
+- **Events scheduled in the past are dropped**: The event loop silently ignores events scheduled before `current_t` (see `EventLoop::run()` implementation)
+- **Agents are trait objects**: Stored as `Vec<Box<dyn Agent<T, S>>>` for heterogeneous collections
+- **BinaryHeap ordering**: Event ordering is reversed in the `Ord` implementation to create min-heap behavior (earlier times = higher priority)
+- **Stats collection**: Call `event_loop.stats()` after `run()` to get `Vec<S>` from all agents
+- **Broadcast semantics**: All agents receive all events; agents filter by relevance (see Resource/ConsumerProcess pattern)
 
 ## Target Papers for Recreation
 
