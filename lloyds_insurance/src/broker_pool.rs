@@ -211,6 +211,8 @@ mod tests {
             &Event::LeadQuoteAccepted {
                 risk_id,
                 syndicate_id: 0,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
             },
         );
 

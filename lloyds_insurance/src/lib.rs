@@ -12,6 +12,7 @@ pub mod catastrophe_loss_generator;
 pub mod central_risk_repository;
 pub mod market_statistics_collector;
 pub mod syndicate;
+pub mod syndicate_var_exposure;
 pub mod time_generator;
 
 pub use attritional_loss_generator::AttritionalLossGenerator;
@@ -45,11 +46,15 @@ pub enum Event {
     LeadQuoteRequested {
         risk_id: usize,
         syndicate_id: usize,
+        peril_region: usize,
+        risk_limit: f64,
     },
     FollowQuoteRequested {
         risk_id: usize,
         syndicate_id: usize,
         lead_price: f64,
+        peril_region: usize,
+        risk_limit: f64,
     },
 
     // Quote deadlines
@@ -90,11 +95,15 @@ pub enum Event {
     LeadQuoteAccepted {
         risk_id: usize,
         syndicate_id: usize,
+        peril_region: usize,
+        risk_limit: f64,
     },
     FollowQuoteAccepted {
         risk_id: usize,
         syndicate_id: usize,
         line_size: f64,
+        peril_region: usize,
+        risk_limit: f64,
     },
 
     // Losses

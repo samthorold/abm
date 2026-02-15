@@ -1,4 +1,7 @@
-use crate::{Event, ModelConfig, PolicyParticipation, Stats, SyndicateStats};
+use crate::{
+    Event, ExposureDecision, ModelConfig, PolicyParticipation, Stats, SyndicateStats,
+    syndicate_var_exposure::VarExposureManager,
+};
 use des::{Agent, Response};
 
 /// Simplified Syndicate agent (Phase 1: Basic actuarial pricing only)
@@ -26,6 +29,9 @@ pub struct Syndicate {
     industry_lambda_t: f64, // Industry-wide claim frequency (claims per policy)
     industry_mu_t: f64,     // Industry-wide average claim cost
     years_elapsed: usize,   // Track years for warmup period
+
+    // VaR-based exposure management (optional - enabled based on config)
+    var_exposure_manager: Option<VarExposureManager>,
 }
 
 impl Syndicate {
@@ -36,6 +42,19 @@ impl Syndicate {
         // This means we assume default lead line size for initialization
         let industry_lambda_t = config.yearly_claim_frequency; // Claims per participation ≈ claims per risk
         let industry_mu_t = config.gamma_mean * config.default_lead_line_size; // Avg claim for 50% line
+
+        // Initialize VaR exposure manager if enabled (var_exceedance_prob > 0)
+        let var_exposure_manager = if config.var_exceedance_prob > 0.0 {
+            // Use syndicate_id as seed for deterministic behavior per syndicate
+            Some(VarExposureManager::new(
+                config.clone(),
+                initial_capital,
+                syndicate_id as u64 + 1000,
+            ))
+        } else {
+            None
+        };
+
         Self {
             syndicate_id,
             config,
@@ -52,6 +71,7 @@ impl Syndicate {
             industry_lambda_t,
             industry_mu_t,
             years_elapsed: 0,
+            var_exposure_manager,
         }
     }
 
@@ -115,6 +135,8 @@ impl Syndicate {
     fn handle_lead_quote_request(
         &mut self,
         risk_id: usize,
+        _peril_region: usize,
+        _risk_limit: f64,
         current_t: usize,
     ) -> Vec<(usize, Event)> {
         // Use dynamic industry statistics (updated annually from market data)
@@ -123,7 +145,25 @@ impl Syndicate {
 
         // Calculate actuarial price and apply underwriting markup
         let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
-        let price = self.apply_underwriting_markup(actuarial_price);
+        let mut price = self.apply_underwriting_markup(actuarial_price);
+
+        // VaR exposure management check
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            let proposed_exposure = line_size * _risk_limit;
+            match var_em.evaluate_quote(_peril_region, proposed_exposure) {
+                ExposureDecision::Accept => {
+                    // Proceed with quote
+                }
+                ExposureDecision::Reject => {
+                    // Decline to quote
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(factor) => {
+                    // Scale premium up to compensate for risk
+                    price *= factor;
+                }
+            }
+        }
 
         vec![(
             current_t,
@@ -136,7 +176,7 @@ impl Syndicate {
         )]
     }
 
-    fn handle_lead_accepted(&mut self, risk_id: usize) {
+    fn handle_lead_accepted(&mut self, risk_id: usize, peril_region: usize, risk_limit: f64) {
         // Record premium - must match what we quoted
         let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
         let line_size = self.config.default_lead_line_size;
@@ -149,6 +189,19 @@ impl Syndicate {
         self.premium_history.push(price);
         self.annual_premiums += price;
         self.annual_policies_written += 1;
+
+        // Track exposure by peril region
+        let exposure = line_size * risk_limit;
+        *self
+            .stats
+            .exposure_by_peril_region
+            .entry(peril_region)
+            .or_insert(0.0) += exposure;
+
+        // Record exposure in VaR manager
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            var_em.record_exposure(peril_region, exposure);
+        }
 
         let participation = PolicyParticipation {
             risk_id,
@@ -168,11 +221,16 @@ impl Syndicate {
         &mut self,
         risk_id: usize,
         _lead_price: f64,
+        _peril_region: usize,
+        _risk_limit: f64,
         current_t: usize,
     ) -> Vec<(usize, Event)> {
         // Followers accept the lead's price and offer their line size
         // (In this simplified version, we don't use lead_price for pricing decisions)
         let line_size = self.config.default_follow_line_size;
+
+        // TODO: Add VaR exposure management check here (Priority 2)
+        // TODO: Add pricing strength adjustment (Priority 3)
 
         vec![(
             current_t,
@@ -184,7 +242,13 @@ impl Syndicate {
         )]
     }
 
-    fn handle_follow_accepted(&mut self, risk_id: usize, line_size: f64) {
+    fn handle_follow_accepted(
+        &mut self,
+        risk_id: usize,
+        line_size: f64,
+        peril_region: usize,
+        risk_limit: f64,
+    ) {
         // Calculate premium for our follow share
         let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
 
@@ -200,6 +264,19 @@ impl Syndicate {
         self.premium_history.push(price);
         self.annual_premiums += price;
         self.annual_policies_written += 1;
+
+        // Track exposure by peril region
+        let exposure = line_size * risk_limit;
+        *self
+            .stats
+            .exposure_by_peril_region
+            .entry(peril_region)
+            .or_insert(0.0) += exposure;
+
+        // Record exposure in VaR manager
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            var_em.record_exposure(peril_region, exposure);
+        }
 
         let participation = PolicyParticipation {
             risk_id,
@@ -349,29 +426,43 @@ impl Agent<Event, Stats> for Syndicate {
             Event::LeadQuoteRequested {
                 risk_id,
                 syndicate_id,
-            } if *syndicate_id == self.syndicate_id => {
-                Response::events(self.handle_lead_quote_request(*risk_id, current_t))
-            }
+                peril_region,
+                risk_limit,
+            } if *syndicate_id == self.syndicate_id => Response::events(
+                self.handle_lead_quote_request(*risk_id, *peril_region, *risk_limit, current_t),
+            ),
             Event::LeadQuoteAccepted {
                 risk_id,
                 syndicate_id,
+                peril_region,
+                risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                self.handle_lead_accepted(*risk_id);
+                self.handle_lead_accepted(*risk_id, *peril_region, *risk_limit);
                 Response::new()
             }
             Event::FollowQuoteRequested {
                 risk_id,
                 syndicate_id,
                 lead_price,
+                peril_region,
+                risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                Response::events(self.handle_follow_quote_request(*risk_id, *lead_price, current_t))
+                Response::events(self.handle_follow_quote_request(
+                    *risk_id,
+                    *lead_price,
+                    *peril_region,
+                    *risk_limit,
+                    current_t,
+                ))
             }
             Event::FollowQuoteAccepted {
                 risk_id,
                 syndicate_id,
                 line_size,
+                peril_region,
+                risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                self.handle_follow_accepted(*risk_id, *line_size);
+                self.handle_follow_accepted(*risk_id, *line_size, *peril_region, *risk_limit);
                 Response::new()
             }
             Event::ClaimReceived {
@@ -469,7 +560,7 @@ mod tests {
         let mut syndicate = Syndicate::new(0, config.clone());
         let initial_capital = syndicate.capital;
 
-        syndicate.handle_lead_accepted(1);
+        syndicate.handle_lead_accepted(1, 0, 10_000_000.0);
 
         assert!(syndicate.capital > initial_capital);
         assert_eq!(syndicate.stats.num_policies, 1);
@@ -487,6 +578,8 @@ mod tests {
                 risk_id: 1,
                 syndicate_id: 0,
                 lead_price: 150_000.0,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
             },
         );
 
@@ -518,6 +611,8 @@ mod tests {
                 risk_id: 1,
                 syndicate_id: 0,
                 line_size: 0.1,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
             },
         );
 
@@ -688,7 +783,7 @@ mod tests {
         let mut syndicate = Syndicate::new(0, config.clone());
 
         // Step 1: Quote a price
-        let quote_events = syndicate.handle_lead_quote_request(1, 0);
+        let quote_events = syndicate.handle_lead_quote_request(1, 0, 10_000_000.0, 0);
         let quoted_price = match &quote_events[0].1 {
             Event::LeadQuoteOffered { price, .. } => *price,
             _ => panic!("Expected LeadQuoteOffered event"),
@@ -696,7 +791,7 @@ mod tests {
 
         // Step 2: Accept that quote
         let initial_capital = syndicate.capital;
-        syndicate.handle_lead_accepted(1);
+        syndicate.handle_lead_accepted(1, 0, 10_000_000.0);
 
         // Step 3: Verify the premium collected matches the quoted price
         let premium_collected = syndicate.capital - initial_capital;

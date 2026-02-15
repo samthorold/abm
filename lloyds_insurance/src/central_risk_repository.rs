@@ -121,11 +121,14 @@ impl CentralRiskRepository {
                 .unwrap();
 
             // Notify winning syndicate
+            let risk = self.risks.get(&risk_id).expect("Risk should exist");
             events.push((
                 current_t,
                 Event::LeadQuoteAccepted {
                     risk_id,
                     syndicate_id: best_quote.syndicate_id,
+                    peril_region: risk.peril_region,
+                    risk_limit: risk.limit,
                 },
             ));
 
@@ -165,12 +168,15 @@ impl CentralRiskRepository {
                     remaining_line -= allocated_line;
 
                     // Notify follower
+                    let risk = self.risks.get(&risk_id).expect("Risk should exist");
                     events.push((
                         current_t,
                         Event::FollowQuoteAccepted {
                             risk_id,
                             syndicate_id: quote.syndicate_id,
                             line_size: allocated_line,
+                            peril_region: risk.peril_region,
+                            risk_limit: risk.limit,
                         },
                     ));
 
@@ -297,6 +303,8 @@ impl Agent<Event, Stats> for CentralRiskRepository {
                         Event::LeadQuoteRequested {
                             risk_id: *risk_id,
                             syndicate_id,
+                            peril_region: *peril_region,
+                            risk_limit: *limit,
                         },
                     ));
                 }
@@ -323,6 +331,7 @@ impl Agent<Event, Stats> for CentralRiskRepository {
             Event::LeadQuoteAccepted {
                 risk_id,
                 syndicate_id,
+                ..
             } => {
                 // Once lead is selected, request follow quotes (folded from BrokerSyndicateNetwork)
                 let mut events = Vec::new();
@@ -330,12 +339,16 @@ impl Agent<Event, Stats> for CentralRiskRepository {
                 for follower_id in follow_syndicates {
                     if follower_id != *syndicate_id {
                         // Don't ask lead to follow
+                        let risk = self.risks.get(risk_id).expect("Risk should exist");
+                        let policy = self.policies.get(risk_id).expect("Policy should exist");
                         events.push((
                             current_t,
                             Event::FollowQuoteRequested {
                                 risk_id: *risk_id,
                                 syndicate_id: follower_id,
-                                lead_price: 0.0, // Will be filled by repository
+                                lead_price: policy.lead_price,
+                                peril_region: risk.peril_region,
+                                risk_limit: risk.limit,
                             },
                         ));
                     }
@@ -456,18 +469,52 @@ mod tests {
         let config = ModelConfig::default();
         let mut repo = CentralRiskRepository::new(config, 5, 12345);
 
-        let resp = repo.act(
+        // First register risk so it can be looked up
+        repo.act(
             0,
-            &Event::LeadQuoteAccepted {
+            &Event::RiskBroadcasted {
                 risk_id: 1,
-                syndicate_id: 0,
+                peril_region: 0,
+                limit: 10_000_000.0,
+                broker_id: 0,
             },
         );
 
-        // Should emit FollowQuoteRequested events
-        assert!(!resp.events.is_empty());
+        // Submit a lead quote so we have something to select
+        repo.act(
+            0,
+            &Event::LeadQuoteOffered {
+                risk_id: 1,
+                syndicate_id: 0,
+                price: 300_000.0,
+                line_size: 0.5,
+            },
+        );
+
+        // Trigger lead selection - this creates the policy and emits LeadQuoteAccepted
+        let resp = repo.act(0, &Event::LeadQuoteSelectionDeadline { risk_id: 1 });
+
+        // Should have emitted LeadQuoteAccepted
         assert!(
             resp.events
+                .iter()
+                .any(|(_, e)| matches!(e, Event::LeadQuoteAccepted { .. }))
+        );
+
+        // Now handle the LeadQuoteAccepted to get follow requests
+        let lead_accepted_event = resp
+            .events
+            .iter()
+            .find(|(_, e)| matches!(e, Event::LeadQuoteAccepted { .. }))
+            .unwrap();
+
+        let follow_resp = repo.act(0, &lead_accepted_event.1);
+
+        // Should emit FollowQuoteRequested events
+        assert!(!follow_resp.events.is_empty());
+        assert!(
+            follow_resp
+                .events
                 .iter()
                 .all(|(_, e)| matches!(e, Event::FollowQuoteRequested { .. }))
         );
