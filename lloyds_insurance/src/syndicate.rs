@@ -261,9 +261,10 @@ impl Syndicate {
             .entry(peril_region)
             .or_insert(0.0) += exposure;
 
-        // Record exposure in VaR manager
+        // Record exposure in VaR manager and update capital
         if let Some(ref mut var_em) = self.var_exposure_manager {
             var_em.record_exposure(peril_region, exposure);
+            var_em.update_capital(self.capital);
         }
 
         let participation = PolicyParticipation {
@@ -381,9 +382,10 @@ impl Syndicate {
             .entry(peril_region)
             .or_insert(0.0) += exposure;
 
-        // Record exposure in VaR manager
+        // Record exposure in VaR manager and update capital
         if let Some(ref mut var_em) = self.var_exposure_manager {
             var_em.record_exposure(peril_region, exposure);
+            var_em.update_capital(self.capital);
         }
 
         let participation = PolicyParticipation {
@@ -405,6 +407,11 @@ impl Syndicate {
         self.loss_history.push(amount);
         self.annual_claims += amount;
         self.annual_claims_count += 1;
+
+        // Update VaR manager capital if enabled
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            var_em.update_capital(self.capital);
+        }
 
         self.stats.total_claims_paid += amount;
         self.stats.num_claims += 1;
@@ -450,6 +457,11 @@ impl Syndicate {
             if self.capital >= dividend {
                 self.capital -= dividend;
                 self.stats.total_dividends_paid += dividend;
+
+                // Update VaR manager capital if enabled
+                if let Some(ref mut var_em) = self.var_exposure_manager {
+                    var_em.update_capital(self.capital);
+                }
             }
         }
 
@@ -513,8 +525,12 @@ impl Syndicate {
         self.stats.update_profit();
         self.stats.markup_m_t = self.markup_m_t;
 
-        // Update exposure by peril region (simplified - would need risk info)
-        // For now, just track total exposure
+        // Update uniform_deviation from VaR manager if enabled
+        if let Some(ref var_em) = self.var_exposure_manager {
+            self.stats.uniform_deviation = var_em.uniform_deviation();
+        } else {
+            self.stats.uniform_deviation = 0.0;
+        }
     }
 }
 
