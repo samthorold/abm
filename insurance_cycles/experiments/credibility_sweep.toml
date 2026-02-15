@@ -1,0 +1,34 @@
+# Credibility Factor Sweep
+# Test impact of z (weight on own experience vs industry average)
+
+[experiment]
+name = "credibility_sweep"
+description = "Parameter sweep: z ∈ [0.0, 0.5] - test synchronization effects"
+num_runs = 10
+num_years = 100
+warmup_years = 20
+base_seed = 2000
+
+[model]
+# Fixed parameters (baseline)
+risk_loading_factor = 0.001
+underwriter_smoothing = 0.3
+distance_cost = 0.08
+ewma_smoothing = 0.2
+claim_frequency = 1.0
+gamma_mean = 100.0
+gamma_std = 10.0
+num_insurers = 20
+num_customers = 1000
+initial_capital = 10000.0
+leverage_ratio = 2.0
+
+[sweep]
+parameter = "credibility_factor"  # z
+values = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+
+[output]
+save_market_timeseries = true
+save_insurer_snapshots = false
+save_summary_stats = true
+snapshot_interval = 10

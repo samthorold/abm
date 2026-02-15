@@ -1,0 +1,34 @@
+# Distance Cost Sweep
+# Test impact of γ (customer preference sensitivity)
+
+[experiment]
+name = "distance_cost_sweep"
+description = "Parameter sweep: γ ∈ [0.02, 0.2] - test market concentration effects"
+num_runs = 10
+num_years = 100
+warmup_years = 20
+base_seed = 3000
+
+[model]
+# Fixed parameters (baseline)
+risk_loading_factor = 0.001
+underwriter_smoothing = 0.3
+credibility_factor = 0.2
+ewma_smoothing = 0.2
+claim_frequency = 1.0
+gamma_mean = 100.0
+gamma_std = 10.0
+num_insurers = 20
+num_customers = 1000
+initial_capital = 10000.0
+leverage_ratio = 2.0
+
+[sweep]
+parameter = "distance_cost"  # γ
+values = [0.02, 0.05, 0.08, 0.12, 0.16, 0.20]
+
+[output]
+save_market_timeseries = true
+save_insurer_snapshots = true  # Track market concentration
+save_summary_stats = true
+snapshot_interval = 10

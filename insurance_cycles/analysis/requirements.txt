@@ -1,0 +1,17 @@
+# Python dependencies for insurance_cycles analysis
+
+# Core scientific computing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Statistical analysis
+statsmodels>=0.14.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Optional: Jupyter for interactive analysis
+jupyter>=1.0.0
+ipython>=8.12.0

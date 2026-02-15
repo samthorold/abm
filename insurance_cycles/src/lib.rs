@@ -16,6 +16,7 @@
 pub mod helpers;
 pub mod insurer;
 pub mod market_coordinator;
+pub mod output;
 
 // Constants
 pub const DAYS_PER_YEAR: usize = 365;
@@ -80,6 +81,9 @@ pub struct InsurerStats {
     pub current_market_price: f64,
     pub current_markup: f64,
     pub num_customers: usize,
+
+    // Market position
+    pub market_share: f64, // Fraction of total customers (0.0-1.0)
 
     // Historical data (for calculations)
     pub ewma_claim: f64,
@@ -151,6 +155,10 @@ pub struct MarketStats {
     pub min_price: f64,
     pub max_price: f64,
     pub avg_price: f64,
+
+    // Market concentration metrics (current year)
+    pub herfindahl_index: f64, // HHI = Σ(market_share²), range [1/N, 1]
+    pub gini_coefficient: f64, // Inequality: 0 = perfect equality, 1 = monopoly
 
     // Time series (full history for cycle detection)
     pub loss_ratio_history: Vec<f64>,
@@ -350,6 +358,67 @@ impl MarketStats {
 
         Some(dominant_freq)
     }
+
+    /// Calculate Herfindahl-Hirschman Index (HHI) from market shares
+    ///
+    /// HHI = Σ(market_share²)
+    /// Range: [1/N, 1] where N = number of firms
+    /// - 1/N = perfect competition (equal market shares)
+    /// - 1 = monopoly
+    /// - >0.25 = highly concentrated market
+    pub fn calculate_herfindahl(market_shares: &[f64]) -> f64 {
+        market_shares.iter().map(|s| s * s).sum()
+    }
+
+    /// Calculate Gini coefficient from market shares
+    ///
+    /// Measures inequality in market share distribution
+    /// Range: [0, 1]
+    /// - 0 = perfect equality (all firms equal)
+    /// - 1 = perfect inequality (monopoly)
+    ///
+    /// Formula: G = (Σ|share_i - share_j|) / (2N × Σshare_i)
+    pub fn calculate_gini(market_shares: &[f64]) -> f64 {
+        if market_shares.is_empty() {
+            return 0.0;
+        }
+
+        let n = market_shares.len() as f64;
+        let mut diffs_sum = 0.0;
+
+        for i in 0..market_shares.len() {
+            for j in 0..market_shares.len() {
+                diffs_sum += (market_shares[i] - market_shares[j]).abs();
+            }
+        }
+
+        let total_shares: f64 = market_shares.iter().sum();
+        if total_shares < 1e-10 {
+            return 0.0;
+        }
+
+        diffs_sum / (2.0 * n * total_shares)
+    }
+
+    /// Calculate peak-to-trough amplitude of cycles
+    pub fn cycle_amplitude(&self) -> f64 {
+        if self.loss_ratio_history.is_empty() {
+            return 0.0;
+        }
+
+        let min = self
+            .loss_ratio_history
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let max = self
+            .loss_ratio_history
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        max - min
+    }
 }
 
 /// Unified stats enum for all agents
@@ -480,6 +549,7 @@ mod tests {
             current_market_price: 0.0,
             current_markup: 0.0,
             num_customers: 0,
+            market_share: 0.0,
             ewma_claim: 0.0,
             price_history: vec![],
             quantity_history: vec![],
@@ -508,6 +578,7 @@ mod tests {
             current_market_price: 0.0,
             current_markup: 0.0,
             num_customers: 0,
+            market_share: 0.0,
             ewma_claim: 0.0,
             price_history: vec![100.0, 110.0],
             quantity_history: vec![50, 45],
@@ -538,6 +609,7 @@ mod tests {
             current_market_price: 0.0,
             current_markup: 0.0,
             num_customers: 0,
+            market_share: 0.0,
             ewma_claim: 0.0,
             price_history: vec![100.0],
             quantity_history: vec![50],
@@ -563,6 +635,8 @@ mod tests {
             min_price: 0.0,
             max_price: 0.0,
             avg_price: 0.0,
+            herfindahl_index: 0.0,
+            gini_coefficient: 0.0,
             loss_ratio_history: vec![0.9, 1.0, 1.1, 1.0, 0.9],
             avg_claim_history: vec![],
         };
@@ -589,6 +663,8 @@ mod tests {
             min_price: 0.0,
             max_price: 0.0,
             avg_price: 0.0,
+            herfindahl_index: 0.0,
+            gini_coefficient: 0.0,
             loss_ratio_history: vec![1.0, 1.5, 1.75, 1.875, 1.9375], // x_t = 0.5·x_{t-1} + 1.0
             avg_claim_history: vec![],
         };
@@ -627,6 +703,8 @@ mod tests {
             min_price: 0.0,
             max_price: 0.0,
             avg_price: 0.0,
+            herfindahl_index: 0.0,
+            gini_coefficient: 0.0,
             loss_ratio_history: series,
             avg_claim_history: vec![],
         };
@@ -669,6 +747,8 @@ mod tests {
             min_price: 0.0,
             max_price: 0.0,
             avg_price: 0.0,
+            herfindahl_index: 0.0,
+            gini_coefficient: 0.0,
             loss_ratio_history: series,
             avg_claim_history: vec![],
         };
@@ -709,6 +789,8 @@ mod tests {
             min_price: 0.0,
             max_price: 0.0,
             avg_price: 0.0,
+            herfindahl_index: 0.0,
+            gini_coefficient: 0.0,
             loss_ratio_history: series,
             avg_claim_history: vec![],
         };

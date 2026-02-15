@@ -6,11 +6,13 @@
 use des::EventLoop;
 use insurance_cycles::insurer::Insurer;
 use insurance_cycles::market_coordinator::MarketCoordinator;
+use insurance_cycles::output::SimulationOutput;
 use insurance_cycles::{Customer, Event, ModelConfig, Stats, DAYS_PER_YEAR};
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
 use std::collections::HashMap;
+use std::env;
 use std::f64::consts::PI;
 
 fn main() {
@@ -254,6 +256,28 @@ fn main() {
             println!("    Current price: ${:.2}", stats.current_market_price);
             println!("    Customers: {}", stats.num_customers);
             println!("    Markup: {:.3}", stats.current_markup);
+        }
+    }
+
+    // Optional data export
+    if let Ok(output_dir) = env::var("OUTPUT_DIR") {
+        println!("\n=== Exporting Data ===");
+        println!("Output directory: {}", output_dir);
+
+        let run_dir = format!("{}/run_{}", output_dir, seed);
+
+        match SimulationOutput::from_stats(all_stats.clone(), &config, seed, num_years)
+            .write_all(&run_dir)
+        {
+            Ok(_) => {
+                println!("✓ Data exported successfully:");
+                println!("  - {}/market_timeseries.csv", run_dir);
+                println!("  - {}/insurer_snapshots.csv", run_dir);
+                println!("  - {}/summary.json", run_dir);
+            }
+            Err(e) => {
+                eprintln!("✗ Error exporting data: {}", e);
+            }
         }
     }
 

@@ -104,6 +104,8 @@ impl MarketCoordinator {
                 min_price: 0.0,
                 max_price: 0.0,
                 avg_price: 0.0,
+                herfindahl_index: 0.0,
+                gini_coefficient: 0.0,
                 loss_ratio_history: Vec::new(),
                 avg_claim_history: Vec::new(),
             },
@@ -241,8 +243,19 @@ impl MarketCoordinator {
                 })
                 .collect();
 
-            // Sort by increasing cost
-            insurer_costs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            // Sort by increasing cost (handle NaN by treating as infinite cost)
+            insurer_costs.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or_else(|| {
+                    // If comparison fails (NaN), NaN values go to the end
+                    if a.1.is_nan() && b.1.is_nan() {
+                        std::cmp::Ordering::Equal
+                    } else if a.1.is_nan() {
+                        std::cmp::Ordering::Greater // NaN goes to end
+                    } else {
+                        std::cmp::Ordering::Less
+                    }
+                })
+            });
 
             // Try insurers in order until one has capacity
             for (insurer_id, _) in insurer_costs {
@@ -318,6 +331,8 @@ impl MarketCoordinator {
             min_price,
             max_price,
             avg_price,
+            herfindahl_index: 0.0, // Will be calculated in stats() method
+            gini_coefficient: 0.0, // Will be calculated in stats() method
             loss_ratio_history: self.loss_ratio_history.clone(),
             avg_claim_history: self.avg_claim_history.clone(),
         };
