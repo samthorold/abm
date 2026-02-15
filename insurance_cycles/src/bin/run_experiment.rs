@@ -72,6 +72,7 @@ impl ModelParams {
             num_customers: self.num_customers,
             initial_capital: self.initial_capital,
             leverage_ratio: self.leverage_ratio.unwrap_or(2.0),
+            allocation_noise: 0.05, // Default ±5% noise
         }
     }
 }

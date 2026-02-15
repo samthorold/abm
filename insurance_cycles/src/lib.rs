@@ -490,6 +490,9 @@ pub struct ModelConfig {
     pub num_customers: usize, // M
     pub initial_capital: f64, // Starting capital per insurer
     pub leverage_ratio: f64,  // Max premium = capital × leverage
+
+    // Customer decision noise
+    pub allocation_noise: f64, // Bounded rationality: ±noise fraction of total cost
 }
 
 impl ModelConfig {
@@ -552,6 +555,7 @@ impl ModelConfig {
             num_customers: 1000,
             initial_capital: 10000.0,
             leverage_ratio: 2.0,
+            allocation_noise: 0.05, // ±5% noise (baseline)
         }
     }
 

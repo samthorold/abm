@@ -138,7 +138,15 @@ fn main() {
             "  Price range: ${:.2} - ${:.2}",
             final_market.min_price, final_market.max_price
         );
-        println!("  Average price: ${:.2}\n", final_market.avg_price);
+        println!("  Average price: ${:.2}", final_market.avg_price);
+        println!(
+            "  Market concentration (HHI): {:.3}",
+            final_market.herfindahl_index
+        );
+        println!(
+            "  Market inequality (Gini): {:.3}\n",
+            final_market.gini_coefficient
+        );
 
         // Loss ratio time series
         println!("Loss Ratio History:");
