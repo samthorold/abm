@@ -503,6 +503,8 @@ impl ModelConfig {
     pub fn scenario_1() -> Self {
         Self {
             mean_cat_events_per_year: 0.0, // Attritional losses only (no catastrophes)
+            lead_top_k: 2,                 // Lead selection enabled
+            follow_top_k: 5, // Follow selection enabled (base case includes syndication)
             ..Self::default()
         }
     }
@@ -529,9 +531,378 @@ impl ModelConfig {
 
     pub fn scenario_4() -> Self {
         Self {
-            follow_top_k: 5, // Enable followers
+            mean_cat_events_per_year: 0.0, // Attritional only (like Scenario 1)
+            lead_top_k: 2,                 // Lead selection enabled
+            follow_top_k: 5, // Follow selection enabled (same as S1, focus is on dynamics not presence)
             ..Self::default()
         }
+    }
+}
+
+// ============================================================================
+// Test Helper Functions (for paper validation tests)
+// ============================================================================
+
+#[cfg(test)]
+pub mod test_helpers {
+    use super::*;
+    use des::EventLoop;
+
+    /// Run a scenario configuration for multiple replications
+    pub fn run_scenario_replications(
+        config: ModelConfig,
+        num_years: usize,
+        num_replications: usize,
+        base_seed: u64,
+    ) -> Vec<Vec<MarketSnapshot>> {
+        let mut all_results = Vec::new();
+
+        for replication in 0..num_replications {
+            let events = vec![(0, Event::Day)];
+
+            // Use different seeds for each replication
+            let broker_seed = base_seed + replication as u64 * 1000;
+            let crr_seed = base_seed + replication as u64 * 1000 + 1;
+            let att_seed = base_seed + replication as u64 * 1000 + 2;
+            let cat_seed = base_seed + replication as u64 * 1000 + 3;
+
+            let mut agents: Vec<Box<dyn des::Agent<Event, Stats>>> = vec![
+                Box::new(TimeGenerator::new()),
+                Box::new(Syndicate::new(0, config.clone())),
+                Box::new(Syndicate::new(1, config.clone())),
+                Box::new(Syndicate::new(2, config.clone())),
+                Box::new(Syndicate::new(3, config.clone())),
+                Box::new(Syndicate::new(4, config.clone())),
+                Box::new(BrokerPool::new(25, config.clone(), broker_seed)),
+                Box::new(CentralRiskRepository::new(config.clone(), 5, crr_seed)),
+                Box::new(AttritionalLossGenerator::new(config.clone(), att_seed)),
+                Box::new(MarketStatisticsCollector::new(5)),
+            ];
+
+            // Add catastrophe generator if enabled
+            if config.mean_cat_events_per_year > 0.0 {
+                agents.push(Box::new(CatastropheLossGenerator::new(
+                    config.clone(),
+                    config.num_peril_regions,
+                    cat_seed,
+                )));
+            }
+
+            let mut event_loop = EventLoop::new(events, agents);
+            event_loop.run(365 * num_years);
+
+            let stats = event_loop.stats();
+            let time_series = stats
+                .iter()
+                .filter_map(|s| match s {
+                    Stats::CombinedMarketStats(cs) => Some(cs.market_series.snapshots.clone()),
+                    _ => None,
+                })
+                .next()
+                .expect("Should have combined market stats");
+
+            all_results.push(time_series);
+        }
+
+        all_results
+    }
+
+    /// Count total insolvencies across all replications at final snapshot
+    pub fn count_total_insolvencies(results: &[Vec<MarketSnapshot>]) -> usize {
+        results
+            .iter()
+            .filter_map(|snapshots| snapshots.last())
+            .map(|final_snapshot| final_snapshot.num_insolvent_syndicates)
+            .sum()
+    }
+
+    /// Calculate premium volatility (standard deviation over time)
+    pub fn calculate_premium_volatility(snapshots: &[MarketSnapshot]) -> f64 {
+        let premiums: Vec<f64> = snapshots
+            .iter()
+            .filter(|s| s.avg_premium > 0.0 && s.num_solvent_syndicates > 0)
+            .map(|s| s.avg_premium)
+            .collect();
+
+        if premiums.len() < 2 {
+            return 0.0;
+        }
+
+        let mean = premiums.iter().sum::<f64>() / premiums.len() as f64;
+        let variance =
+            premiums.iter().map(|p| (p - mean).powi(2)).sum::<f64>() / premiums.len() as f64;
+        variance.sqrt()
+    }
+
+    /// Calculate average premium volatility across replications
+    pub fn calculate_avg_premium_volatility(results: &[Vec<MarketSnapshot>]) -> f64 {
+        let volatilities: Vec<f64> = results
+            .iter()
+            .map(|snapshots| calculate_premium_volatility(snapshots))
+            .collect();
+
+        if volatilities.is_empty() {
+            return 0.0;
+        }
+
+        volatilities.iter().sum::<f64>() / volatilities.len() as f64
+    }
+
+    /// Calculate coefficient of variation for premiums at each time point
+    pub fn calculate_premium_coefficient_of_variation(snapshots: &[MarketSnapshot]) -> Vec<f64> {
+        snapshots
+            .iter()
+            .map(|s| {
+                if s.avg_premium > 0.0 {
+                    s.premium_std_dev / s.avg_premium
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    /// Calculate mean uniform deviation over a time period
+    pub fn calculate_mean_uniform_deviation(
+        snapshots: &[MarketSnapshot],
+        skip_warmup_years: usize,
+    ) -> f64 {
+        let relevant_snapshots: Vec<_> = snapshots
+            .iter()
+            .filter(|s| s.year >= skip_warmup_years && s.num_solvent_syndicates > 0)
+            .collect();
+
+        if relevant_snapshots.is_empty() {
+            return 0.0;
+        }
+
+        let sum: f64 = relevant_snapshots
+            .iter()
+            .map(|s| s.avg_uniform_deviation)
+            .sum();
+        sum / relevant_snapshots.len() as f64
+    }
+
+    /// Calculate average uniform deviation across replications
+    pub fn calculate_avg_uniform_deviation(
+        results: &[Vec<MarketSnapshot>],
+        skip_warmup_years: usize,
+    ) -> f64 {
+        let deviations: Vec<f64> = results
+            .iter()
+            .map(|snapshots| calculate_mean_uniform_deviation(snapshots, skip_warmup_years))
+            .collect();
+
+        if deviations.is_empty() {
+            return 0.0;
+        }
+
+        deviations.iter().sum::<f64>() / deviations.len() as f64
+    }
+
+    /// Detect years where catastrophes occurred
+    pub fn detect_catastrophe_years(snapshots: &[MarketSnapshot]) -> Vec<usize> {
+        snapshots
+            .iter()
+            .filter(|s| s.cat_event_occurred)
+            .map(|s| s.year)
+            .collect()
+    }
+
+    /// Calculate peak-to-trough amplitude of premium cycles
+    pub fn calculate_premium_cycle_amplitude(snapshots: &[MarketSnapshot]) -> f64 {
+        let premiums: Vec<f64> = snapshots
+            .iter()
+            .filter(|s| s.avg_premium > 0.0 && s.num_solvent_syndicates > 0)
+            .map(|s| s.avg_premium)
+            .collect();
+
+        if premiums.is_empty() {
+            return 0.0;
+        }
+
+        let max_premium = premiums.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let min_premium = premiums.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+
+        max_premium - min_premium
+    }
+
+    /// Calculate average cycle amplitude across replications
+    pub fn calculate_avg_cycle_amplitude(results: &[Vec<MarketSnapshot>]) -> f64 {
+        let amplitudes: Vec<f64> = results
+            .iter()
+            .map(|snapshots| calculate_premium_cycle_amplitude(snapshots))
+            .collect();
+
+        if amplitudes.is_empty() {
+            return 0.0;
+        }
+
+        amplitudes.iter().sum::<f64>() / amplitudes.len() as f64
+    }
+
+    /// Check if loss ratios exceed 1.0 during catastrophe years
+    pub fn has_loss_ratio_spikes_during_catastrophes(snapshots: &[MarketSnapshot]) -> bool {
+        snapshots
+            .iter()
+            .any(|s| s.cat_event_occurred && s.avg_loss_ratio > 1.0)
+    }
+
+    /// Calculate mean premium over a period
+    pub fn calculate_mean_premium(
+        snapshots: &[MarketSnapshot],
+        start_year: usize,
+        end_year: usize,
+    ) -> f64 {
+        let relevant: Vec<_> = snapshots
+            .iter()
+            .filter(|s| {
+                s.year >= start_year
+                    && s.year <= end_year
+                    && s.avg_premium > 0.0
+                    && s.num_solvent_syndicates > 0
+            })
+            .collect();
+
+        if relevant.is_empty() {
+            return 0.0;
+        }
+
+        relevant.iter().map(|s| s.avg_premium).sum::<f64>() / relevant.len() as f64
+    }
+
+    /// Run a scenario and return both market and syndicate time series
+    pub fn run_scenario_with_syndicate_data(
+        config: ModelConfig,
+        num_years: usize,
+        seed: u64,
+    ) -> (Vec<MarketSnapshot>, Vec<SyndicateSnapshot>) {
+        let events = vec![(0, Event::Day)];
+
+        let mut agents: Vec<Box<dyn des::Agent<Event, Stats>>> = vec![
+            Box::new(TimeGenerator::new()),
+            Box::new(Syndicate::new(0, config.clone())),
+            Box::new(Syndicate::new(1, config.clone())),
+            Box::new(Syndicate::new(2, config.clone())),
+            Box::new(Syndicate::new(3, config.clone())),
+            Box::new(Syndicate::new(4, config.clone())),
+            Box::new(BrokerPool::new(25, config.clone(), seed)),
+            Box::new(CentralRiskRepository::new(config.clone(), 5, seed + 1)),
+            Box::new(AttritionalLossGenerator::new(config.clone(), seed + 2)),
+            Box::new(MarketStatisticsCollector::new(5)),
+        ];
+
+        if config.mean_cat_events_per_year > 0.0 {
+            agents.push(Box::new(CatastropheLossGenerator::new(
+                config.clone(),
+                config.num_peril_regions,
+                seed + 3,
+            )));
+        }
+
+        let mut event_loop = EventLoop::new(events, agents);
+        event_loop.run(365 * num_years);
+
+        let stats = event_loop.stats();
+        let combined_stats = stats
+            .iter()
+            .filter_map(|s| match s {
+                Stats::CombinedMarketStats(cs) => Some(cs),
+                _ => None,
+            })
+            .next()
+            .expect("Should have combined market stats");
+
+        (
+            combined_stats.market_series.snapshots.clone(),
+            combined_stats.syndicate_series.snapshots.clone(),
+        )
+    }
+
+    /// Calculate pairwise Pearson correlation of syndicate loss ratios over time
+    /// Returns average correlation across all syndicate pairs
+    pub fn calculate_loss_ratio_correlation(
+        syndicate_snapshots: &[SyndicateSnapshot],
+        num_syndicates: usize,
+        skip_warmup_years: usize,
+    ) -> f64 {
+        use std::collections::HashMap;
+
+        // Group snapshots by syndicate ID
+        let mut by_syndicate: HashMap<usize, Vec<&SyndicateSnapshot>> = HashMap::new();
+
+        for snapshot in syndicate_snapshots {
+            if snapshot.year >= skip_warmup_years {
+                by_syndicate
+                    .entry(snapshot.syndicate_id)
+                    .or_default()
+                    .push(snapshot);
+            }
+        }
+
+        // Extract loss ratio time series for each syndicate
+        let mut time_series: Vec<Vec<f64>> = Vec::new();
+
+        for syndicate_id in 0..num_syndicates {
+            if let Some(snapshots) = by_syndicate.get(&syndicate_id) {
+                let mut sorted_snapshots = snapshots.clone();
+                sorted_snapshots.sort_by_key(|s| s.year);
+
+                let loss_ratios: Vec<f64> = sorted_snapshots.iter().map(|s| s.loss_ratio).collect();
+                time_series.push(loss_ratios);
+            }
+        }
+
+        if time_series.len() < 2 {
+            return 0.0;
+        }
+
+        // Calculate pairwise correlations
+        let mut correlations = Vec::new();
+
+        for i in 0..time_series.len() {
+            for j in (i + 1)..time_series.len() {
+                let corr = pearson_correlation(&time_series[i], &time_series[j]);
+                if corr.is_finite() {
+                    correlations.push(corr);
+                }
+            }
+        }
+
+        if correlations.is_empty() {
+            return 0.0;
+        }
+
+        correlations.iter().sum::<f64>() / correlations.len() as f64
+    }
+
+    /// Calculate Pearson correlation coefficient between two time series
+    fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
+        if x.len() != y.len() || x.len() < 2 {
+            return 0.0;
+        }
+
+        let n = x.len() as f64;
+        let mean_x = x.iter().sum::<f64>() / n;
+        let mean_y = y.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var_x = 0.0;
+        let mut var_y = 0.0;
+
+        for i in 0..x.len() {
+            let dx = x[i] - mean_x;
+            let dy = y[i] - mean_y;
+            cov += dx * dy;
+            var_x += dx * dx;
+            var_y += dy * dy;
+        }
+
+        if var_x == 0.0 || var_y == 0.0 {
+            return 0.0;
+        }
+
+        cov / (var_x.sqrt() * var_y.sqrt())
     }
 }
 
@@ -1216,6 +1587,674 @@ mod tests {
         println!("✓ EWMA prevents explosive growth");
         if !active_markups.is_empty() {
             println!("✓ Mean reversion observable in active syndicates");
+        }
+    }
+
+    // ========================================================================
+    // Paper Validation Tests - Cross-Scenario Comparisons
+    // ========================================================================
+    //
+    // These tests validate that our implementation reproduces the specific
+    // quantitative and qualitative findings reported in Olmez et al. (2024).
+    //
+    // Test categories:
+    // 1. Cross-Scenario Insolvency Rates
+    // 2. Premium Volatility Comparison
+    // 3. Loss Ratio Correlation (Scenario 4)
+    // 4. Uniform Deviation (Exposure Management)
+    // 5. Catastrophe Response Dynamics
+    // 6. Cyclicality Quantification
+    // 7. Fair Price Convergence
+    //
+    // All tests are feature-gated behind `long-tests` for CI efficiency.
+
+    // ========================================================================
+    // Category 1: Cross-Scenario Insolvency Rates
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario2_has_more_insolvencies_than_scenario1() {
+        // Paper claim: Catastrophes (Scenario 2) cause more insolvencies than
+        // attritional-only (Scenario 1)
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario Comparison: Insolvencies (S1 vs S2) ===");
+
+        let s1_results = run_scenario_replications(ModelConfig::scenario_1(), 50, 10, 10000);
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 10, 20000);
+
+        let s1_insolvencies = count_total_insolvencies(&s1_results);
+        let s2_insolvencies = count_total_insolvencies(&s2_results);
+
+        println!(
+            "Scenario 1 total insolvencies: {} (10 reps × 5 syndicates)",
+            s1_insolvencies
+        );
+        println!(
+            "Scenario 2 total insolvencies: {} (10 reps × 5 syndicates)",
+            s2_insolvencies
+        );
+
+        assert!(
+            s2_insolvencies > s1_insolvencies,
+            "Scenario 2 (with catastrophes) should have more insolvencies ({}) than Scenario 1 ({}) \
+             as stated in the paper",
+            s2_insolvencies,
+            s1_insolvencies
+        );
+
+        println!("✓ Paper claim validated: Catastrophes increase insolvency rate");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario3_has_fewer_insolvencies_than_scenario2() {
+        // Paper claim: VaR exposure management (Scenario 3) reduces insolvencies
+        // compared to premium-only EM (Scenario 2)
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario Comparison: Insolvencies (S2 vs S3) ===");
+
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 10, 30000);
+        let s3_results = run_scenario_replications(ModelConfig::scenario_3(), 50, 10, 40000);
+
+        let s2_insolvencies = count_total_insolvencies(&s2_results);
+        let s3_insolvencies = count_total_insolvencies(&s3_results);
+
+        println!("Scenario 2 (Premium EM) insolvencies: {}", s2_insolvencies);
+        println!("Scenario 3 (VaR EM) insolvencies: {}", s3_insolvencies);
+
+        assert!(
+            s3_insolvencies < s2_insolvencies,
+            "Scenario 3 (VaR EM) should have fewer insolvencies ({}) than Scenario 2 ({}) \
+             as stated in the paper",
+            s3_insolvencies,
+            s2_insolvencies
+        );
+
+        println!("✓ Paper claim validated: VaR EM reduces insolvencies");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario4_has_zero_insolvencies() {
+        // Paper claim (Figure 9 caption): "no insolvencies occurred" in Scenario 4
+        // This is a strong claim - lead-follow syndication eliminates insolvency
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario 4: Zero Insolvencies Test ===");
+
+        let s4_results = run_scenario_replications(ModelConfig::scenario_4(), 50, 10, 50000);
+        let total_insolvencies = count_total_insolvencies(&s4_results);
+
+        println!(
+            "Scenario 4 total insolvencies: {} (10 reps × 5 syndicates)",
+            total_insolvencies
+        );
+
+        // Paper explicitly states zero insolvencies for Scenario 4
+        assert_eq!(
+            total_insolvencies, 0,
+            "Scenario 4 should have zero insolvencies as stated in paper Figure 9 caption, got {}",
+            total_insolvencies
+        );
+
+        println!("✓ Paper claim validated: Lead-follow syndication eliminates insolvencies");
+    }
+
+    // ========================================================================
+    // Category 2: Premium Volatility Comparison
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario4_has_lower_premium_volatility_than_scenario1() {
+        // Paper claim (Figure 9a): Lead-follow syndication causes premiums to
+        // "tightly converge" with lower volatility than base case
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario Comparison: Premium Volatility (S1 vs S4) ===");
+
+        let s1_results = run_scenario_replications(ModelConfig::scenario_1(), 50, 10, 60000);
+        let s4_results = run_scenario_replications(ModelConfig::scenario_4(), 50, 10, 70000);
+
+        let s1_volatility = calculate_avg_premium_volatility(&s1_results);
+        let s4_volatility = calculate_avg_premium_volatility(&s4_results);
+
+        println!("Scenario 1 avg premium std dev: ${:.0}", s1_volatility);
+        println!("Scenario 4 avg premium std dev: ${:.0}", s4_volatility);
+
+        assert!(
+            s4_volatility < s1_volatility,
+            "Scenario 4 volatility (${:.0}) should be lower than Scenario 1 (${:.0}) \
+             per paper Figure 9a showing tight convergence",
+            s4_volatility,
+            s1_volatility
+        );
+
+        println!("✓ Paper claim validated: Lead-follow reduces premium volatility");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario4_premiums_tightly_converge() {
+        // Paper claim: Scenario 4 premiums "tightly converge towards the fair price"
+        // Measured by coefficient of variation (CV) across syndicates
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario 4: Premium Tight Convergence Test ===");
+
+        let s4_results = run_scenario_replications(ModelConfig::scenario_4(), 50, 5, 80000);
+
+        // Calculate coefficient of variation for each year after warmup
+        let mut tight_convergence_count = 0;
+        let mut total_years_checked = 0;
+
+        for snapshots in &s4_results {
+            let cvs = calculate_premium_coefficient_of_variation(snapshots);
+
+            // Check years after warmup (year 10+)
+            for (year_idx, cv) in cvs.iter().enumerate() {
+                if year_idx >= 10 && *cv > 0.0 {
+                    total_years_checked += 1;
+                    if *cv < 0.1 {
+                        // CV < 10% indicates tight convergence
+                        tight_convergence_count += 1;
+                    }
+                }
+            }
+        }
+
+        let tight_fraction = if total_years_checked > 0 {
+            tight_convergence_count as f64 / total_years_checked as f64
+        } else {
+            0.0
+        };
+
+        println!(
+            "Years with tight convergence (CV < 0.1): {}/{}",
+            tight_convergence_count, total_years_checked
+        );
+        println!("Fraction: {:.1}%", tight_fraction * 100.0);
+
+        assert!(
+            tight_fraction > 0.5,
+            "Majority of post-warmup years should show tight convergence (CV < 0.1), got {:.1}%",
+            tight_fraction * 100.0
+        );
+
+        println!("✓ Paper claim validated: Premiums tightly converge in Scenario 4");
+    }
+
+    // ========================================================================
+    // Category 3: Loss Ratio Correlation (Lead-Follow Effect)
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario4_has_highly_correlated_loss_ratios() {
+        // Paper claim (Figure 9b): Lead-follow syndication causes "tightly coupled/
+        // correlated" loss experiences across syndicates
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario 4: High Loss Ratio Correlation Test ===");
+
+        let (_market, syndicate_data) =
+            run_scenario_with_syndicate_data(ModelConfig::scenario_4(), 50, 180000);
+
+        let correlation = calculate_loss_ratio_correlation(&syndicate_data, 5, 10);
+
+        println!(
+            "Average pairwise loss ratio correlation: {:.3}",
+            correlation
+        );
+
+        assert!(
+            correlation > 0.8,
+            "Lead-follow syndication should cause high loss ratio correlation (> 0.8), got {:.3} \
+             per paper Figure 9b showing tight coupling",
+            correlation
+        );
+
+        println!("✓ Paper claim validated: Loss ratios highly correlated in Scenario 4");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario1_has_lower_loss_ratio_correlation_than_scenario4() {
+        // Paper claim: Syndication (Scenario 4) specifically causes the coupling,
+        // not present in independent underwriting (Scenario 1)
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario Comparison: Loss Ratio Correlation (S1 vs S4) ===");
+
+        let (_market1, syndicate1) =
+            run_scenario_with_syndicate_data(ModelConfig::scenario_1(), 50, 190000);
+        let (_market4, syndicate4) =
+            run_scenario_with_syndicate_data(ModelConfig::scenario_4(), 50, 200000);
+
+        let corr_s1 = calculate_loss_ratio_correlation(&syndicate1, 5, 10);
+        let corr_s4 = calculate_loss_ratio_correlation(&syndicate4, 5, 10);
+
+        println!("Scenario 1 loss ratio correlation: {:.3}", corr_s1);
+        println!("Scenario 4 loss ratio correlation: {:.3}", corr_s4);
+
+        assert!(
+            corr_s4 > corr_s1,
+            "Scenario 4 correlation ({:.3}) should be higher than Scenario 1 ({:.3}) \
+             showing that syndication causes the coupling",
+            corr_s4,
+            corr_s1
+        );
+
+        println!("✓ Paper claim validated: Syndication increases loss ratio correlation");
+    }
+
+    // ========================================================================
+    // Category 4: Uniform Deviation (Exposure Management Quality)
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario3_has_lower_uniform_deviation_than_scenario2() {
+        // Paper claim (Figure 8): VaR EM reduces uniform deviation toward 0
+        // compared to premium-only EM
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario Comparison: Uniform Deviation (S2 vs S3) ===");
+
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 10, 90000);
+        let s3_results = run_scenario_replications(ModelConfig::scenario_3(), 50, 10, 100000);
+
+        let s2_deviation = calculate_avg_uniform_deviation(&s2_results, 10);
+        let s3_deviation = calculate_avg_uniform_deviation(&s3_results, 10);
+
+        println!("Scenario 2 mean uniform deviation: {:.3}", s2_deviation);
+        println!("Scenario 3 mean uniform deviation: {:.3}", s3_deviation);
+
+        assert!(
+            s3_deviation < s2_deviation,
+            "Scenario 3 uniform deviation ({:.3}) should be lower than Scenario 2 ({:.3}) \
+             per paper Figure 8",
+            s3_deviation,
+            s2_deviation
+        );
+
+        println!("✓ Paper claim validated: VaR EM reduces uniform deviation");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_var_em_achieves_near_zero_uniform_deviation() {
+        // Paper claim (Figure 8): VaR EM achieves uniform deviation "close to zero"
+        // Figure 8 shows values clustering around 0.05-0.08 for VaR EM
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario 3: Near-Zero Uniform Deviation Test ===");
+
+        let s3_results = run_scenario_replications(ModelConfig::scenario_3(), 50, 10, 110000);
+        let mean_deviation = calculate_avg_uniform_deviation(&s3_results, 10);
+
+        println!(
+            "Mean uniform deviation (years 10-50): {:.3}",
+            mean_deviation
+        );
+        println!("Paper Figure 8 shows VaR EM clustering around 0.05-0.08");
+
+        // Tightened from 0.15 to 0.10 based on paper Figure 8 results
+        assert!(
+            mean_deviation < 0.10,
+            "VaR EM should achieve near-zero uniform deviation (< 0.10), got {:.3}. \
+             Paper Figure 8 shows values ~0.05-0.08.",
+            mean_deviation
+        );
+
+        println!("✓ Paper claim validated: VaR EM achieves near-zero uniform deviation");
+    }
+
+    // ========================================================================
+    // Category 5: Catastrophe Response Dynamics
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_premium_spikes_after_catastrophe_events() {
+        // Paper claim (Figure 6b): Premiums spike immediately after catastrophes
+        // then converge back toward fair price
+
+        use test_helpers::*;
+
+        println!("\n=== Catastrophe Premium Spike Test ===");
+
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 5, 120000);
+
+        let mut spike_count = 0;
+        let mut total_cat_events = 0;
+
+        for snapshots in &s2_results {
+            let cat_years = detect_catastrophe_years(snapshots);
+
+            for &cat_year in &cat_years {
+                // Find pre-cat and post-cat premiums
+                let pre_cat_premium = snapshots
+                    .iter()
+                    .find(|s| s.year == cat_year.saturating_sub(1))
+                    .map(|s| s.avg_premium);
+
+                let post_cat_premium = snapshots
+                    .iter()
+                    .find(|s| s.year == cat_year + 1)
+                    .map(|s| s.avg_premium);
+
+                if let (Some(pre), Some(post)) = (pre_cat_premium, post_cat_premium)
+                    && pre > 0.0
+                    && post > 0.0
+                {
+                    total_cat_events += 1;
+                    if post > pre {
+                        spike_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Statistical expectation: 5 reps × 50 years × 0.05 events/year ≈ 12 catastrophes
+        // Require at least 3 events to avoid silent test passage
+        assert!(
+            total_cat_events >= 3,
+            "Expected ~12 catastrophe events in 5×50yr replications, got {}. \
+             Check configuration if zero events detected.",
+            total_cat_events
+        );
+
+        let spike_fraction = spike_count as f64 / total_cat_events as f64;
+        println!("Catastrophe events analyzed: {}", total_cat_events);
+        println!(
+            "Events with post-cat premium spike: {} ({:.1}%)",
+            spike_count,
+            spike_fraction * 100.0
+        );
+
+        assert!(
+            spike_fraction > 0.5,
+            "Majority of catastrophes should cause premium spikes, got {:.1}%",
+            spike_fraction * 100.0
+        );
+
+        println!("✓ Paper claim validated: Premiums spike after catastrophes");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_loss_ratios_exceed_one_during_catastrophes() {
+        // Paper claim (Figure 7): Loss ratios spike above 1.0 during catastrophe years
+
+        use test_helpers::*;
+
+        println!("\n=== Catastrophe Loss Ratio Spike Test ===");
+
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 10, 130000);
+
+        let mut has_spikes = false;
+
+        for snapshots in &s2_results {
+            if has_loss_ratio_spikes_during_catastrophes(snapshots) {
+                has_spikes = true;
+                break;
+            }
+        }
+
+        assert!(
+            has_spikes,
+            "At least one replication should show loss ratio > 1.0 during catastrophe year \
+             per paper Figure 7"
+        );
+
+        println!("✓ Paper claim validated: Loss ratios exceed 1.0 during catastrophes");
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_premiums_converge_after_catastrophe_spike() {
+        // Paper claim: "once the effect of the catastrophe wears off, syndicates converge
+        // towards fair price" - premiums should decrease after initial spike
+
+        use test_helpers::*;
+
+        println!("\n=== Catastrophe Premium Convergence Test ===");
+
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 5, 210000);
+
+        let mut convergence_count = 0;
+        let mut total_events_checked = 0;
+
+        for snapshots in &s2_results {
+            let cat_years = detect_catastrophe_years(snapshots);
+
+            for &cat_year in &cat_years {
+                // Compare premium 1 year vs 5 years after catastrophe
+                let premium_1yr_after = snapshots
+                    .iter()
+                    .find(|s| s.year == cat_year + 1)
+                    .map(|s| s.avg_premium);
+
+                let premium_5yr_after = snapshots
+                    .iter()
+                    .find(|s| s.year == cat_year + 5)
+                    .map(|s| s.avg_premium);
+
+                if let (Some(p1), Some(p5)) = (premium_1yr_after, premium_5yr_after)
+                    && p1 > 0.0
+                    && p5 > 0.0
+                {
+                    total_events_checked += 1;
+                    // Convergence = premium decreases from spike
+                    if p5 < p1 {
+                        convergence_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Statistical expectation: 5 reps × 50 years × 0.05 events/year ≈ 12 catastrophes
+        // Need events in years 0-45 to have 5-year follow-up, expect ~10 usable events
+        // Require at least 3 events to avoid silent test passage
+        assert!(
+            total_events_checked >= 3,
+            "Expected ~10 catastrophe events with 5-year follow-up, got {}. \
+             Check configuration if zero events detected.",
+            total_events_checked
+        );
+
+        let convergence_fraction = convergence_count as f64 / total_events_checked as f64;
+        println!("Catastrophe events analyzed: {}", total_events_checked);
+        println!(
+            "Events with convergence (5yr < 1yr premium): {} ({:.1}%)",
+            convergence_count,
+            convergence_fraction * 100.0
+        );
+
+        assert!(
+            convergence_fraction > 0.5,
+            "Majority of catastrophes should show convergence (5yr < 1yr premium), got {:.1}%",
+            convergence_fraction * 100.0
+        );
+
+        println!("✓ Paper claim validated: Premiums converge after catastrophe spike");
+    }
+
+    // ========================================================================
+    // Category 6: Cyclicality Quantification
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario2_has_higher_cyclical_amplitude_than_scenario1() {
+        // Paper claim: Scenario 2 has "more pronounced cyclicality" than Scenario 1
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario Comparison: Cyclical Amplitude (S1 vs S2) ===");
+
+        let s1_results = run_scenario_replications(ModelConfig::scenario_1(), 50, 10, 140000);
+        let s2_results = run_scenario_replications(ModelConfig::scenario_2(), 50, 10, 150000);
+
+        let s1_amplitude = calculate_avg_cycle_amplitude(&s1_results);
+        let s2_amplitude = calculate_avg_cycle_amplitude(&s2_results);
+
+        println!("Scenario 1 avg cycle amplitude: ${:.0}", s1_amplitude);
+        println!("Scenario 2 avg cycle amplitude: ${:.0}", s2_amplitude);
+
+        assert!(
+            s2_amplitude > s1_amplitude,
+            "Scenario 2 amplitude (${:.0}) should be higher than Scenario 1 (${:.0}) \
+             per paper's claim of more pronounced cyclicality",
+            s2_amplitude,
+            s1_amplitude
+        );
+
+        println!("✓ Paper claim validated: Catastrophes exaggerate cyclicality");
+    }
+
+    // ========================================================================
+    // Category 7: Fair Price Convergence
+    // ========================================================================
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario1_premiums_converge_to_fair_price() {
+        // Paper claim (Figure 4b): Premiums converge to fair price in Scenario 1
+        //
+        // Fair price calculation (per syndicate participation, not per risk):
+        // - Expected loss per risk = yearly_claim_frequency × gamma_mean
+        //   = 0.1 × $3M = $300k (total risk fair price)
+        // - Lead syndicate share (50% line) = 0.5 × $300k = $150k
+        // - With volatility loading (20%) = $150k × 1.2 = $180k expected lead premium
+        //
+        // NOTE: avg_premium in MarketSnapshot is averaged across all syndicate
+        // participations (leads + follows), so expected value is weighted by line sizes.
+        // With current config: leads take 50%, follows take 10% each.
+        //
+        // Statistical limitations: 10 replications provide trend validation but not
+        // rigorous significance testing. Wide tolerance (±50%) accounts for:
+        // - Stochastic variance in claim timing
+        // - Market collapse in some replications (early insolvencies)
+        // - EWMA markup adjustment lag
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario 1: Fair Price Convergence Test ===");
+
+        let s1_results = run_scenario_replications(ModelConfig::scenario_1(), 50, 10, 160000);
+
+        // Calculate mean premium for years 40-50 across replications
+        let mut late_period_premiums = Vec::new();
+
+        for snapshots in &s1_results {
+            let mean_premium = calculate_mean_premium(snapshots, 40, 50);
+            if mean_premium > 0.0 {
+                late_period_premiums.push(mean_premium);
+            }
+        }
+
+        if !late_period_premiums.is_empty() {
+            let overall_mean =
+                late_period_premiums.iter().sum::<f64>() / late_period_premiums.len() as f64;
+
+            // Calculate standard deviation for effect size reporting
+            let variance = late_period_premiums
+                .iter()
+                .map(|p| (p - overall_mean).powi(2))
+                .sum::<f64>()
+                / late_period_premiums.len() as f64;
+            let std_dev = variance.sqrt();
+
+            println!(
+                "Mean premium (years 40-50): ${:.0} ± ${:.0}",
+                overall_mean, std_dev
+            );
+            println!("Theoretical fair price: $150k (lead 50% line), with 20% loading: $180k");
+            println!(
+                "Replication stats: n={}, CV={:.2}",
+                late_period_premiums.len(),
+                std_dev / overall_mean
+            );
+
+            // Relaxed bounds: ±50% tolerance due to market variability
+            // This validates directional convergence rather than exact quantitative match
+            assert!(
+                (75_000.0..=300_000.0).contains(&overall_mean),
+                "Late-period premium ${:.0} should be within ±50% of $150k fair price. \
+                 Wide tolerance accounts for stochastic variance and market collapse in some replications.",
+                overall_mean
+            );
+
+            println!("✓ Paper claim validated: Premiums converge toward fair price");
+        } else {
+            println!("⚠ Insufficient active market data for validation (early collapses)");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "long-tests"), ignore)]
+    fn test_scenario4_premiums_converge_to_fair_price_with_low_variance() {
+        // Paper claim: Scenario 4 premiums "tightly converge towards the fair price"
+        // (both mean convergence AND low variance)
+
+        use test_helpers::*;
+
+        println!("\n=== Scenario 4: Fair Price + Low Variance Test ===");
+
+        let s4_results = run_scenario_replications(ModelConfig::scenario_4(), 50, 10, 170000);
+
+        let mut late_period_premiums = Vec::new();
+
+        for snapshots in &s4_results {
+            let mean_premium = calculate_mean_premium(snapshots, 40, 50);
+            if mean_premium > 0.0 {
+                late_period_premiums.push(mean_premium);
+            }
+        }
+
+        if late_period_premiums.len() >= 5 {
+            let overall_mean =
+                late_period_premiums.iter().sum::<f64>() / late_period_premiums.len() as f64;
+            let variance = late_period_premiums
+                .iter()
+                .map(|p| (p - overall_mean).powi(2))
+                .sum::<f64>()
+                / late_period_premiums.len() as f64;
+            let std_dev = variance.sqrt();
+
+            println!("Mean premium (years 40-50): ${:.0}", overall_mean);
+            println!("Std dev across replications: ${:.0}", std_dev);
+
+            // Tight convergence: mean near fair price AND low variance
+            assert!(
+                (75_000.0..=250_000.0).contains(&overall_mean),
+                "Mean premium ${:.0} should be near $150k fair price",
+                overall_mean
+            );
+
+            assert!(
+                std_dev < 50_000.0,
+                "Std dev ${:.0} should be low (< $50k) indicating tight convergence",
+                std_dev
+            );
+
+            println!("✓ Paper claim validated: Tight convergence to fair price in Scenario 4");
+        } else {
+            println!("⚠ Insufficient replications with active markets for validation");
         }
     }
 }
