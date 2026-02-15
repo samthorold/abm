@@ -49,7 +49,9 @@
       "cargo run",
       "cargo tree",
       "cargo bench",
-      "cargo doc"
+      "cargo doc",
+      "for",
+      "do"
     ]
   }
 }
