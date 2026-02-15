@@ -134,6 +134,47 @@ cargo test min_queue
 cargo test noddy_run
 ```
 
+## Git Workflow and Commit Guidelines
+
+### NEVER Use `--no-verify` with Git Commits
+
+**CRITICAL**: Do NOT use `git commit --no-verify` or `git commit -n` to bypass pre-commit hooks. Pre-commit hooks exist to catch issues early and maintain code quality.
+
+If tests or checks in pre-commit hooks are taking too long:
+
+1. **Put long-running tests behind feature flags** instead of skipping them
+2. **Move expensive checks to CI** rather than pre-commit hooks
+3. **Optimize the slow tests** to run faster
+4. **Use `cargo test --lib`** for unit tests only if integration tests are slow
+
+**Why this matters**:
+- Bypassing hooks can commit broken code to the repository
+- It defeats the purpose of automated quality checks
+- It can break CI pipelines and block other developers
+- It creates technical debt that's harder to fix later
+
+**If you're tempted to use `--no-verify`**, that's a sign that your testing strategy needs improvement, not that the safety check should be skipped.
+
+Example of putting slow tests behind feature flags:
+
+```rust
+#[test]
+#[cfg(feature = "slow-tests")]
+fn expensive_simulation_convergence_test() {
+    // Long-running simulation test
+}
+```
+
+Then run quick tests normally:
+```bash
+cargo test
+```
+
+And run all tests (including slow ones) explicitly when needed:
+```bash
+cargo test --all-features
+```
+
 ## Working with This Codebase
 
 ### Adding New Simulations
