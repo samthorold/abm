@@ -964,8 +964,7 @@ mod tests {
             "Insolvencies should not exceed total syndicates (sanity check)"
         );
 
-        // Assertion 4: Premium volatility analysis (if we have premium data)
-        // Note: avg_premium has known bug, but we can still analyze the pattern
+        // Assertion 4: Premium volatility analysis
         let premiums_over_time: Vec<f64> = active_years
             .iter()
             .map(|s| s.avg_premium)
@@ -990,9 +989,6 @@ mod tests {
 
             // High volatility expected due to catastrophe shocks
             // CoV > 0.3 indicates significant cyclicality
-            println!(
-                "\nNote: avg_premium has known calculation bug, but volatility pattern is observable"
-            );
         }
     }
 
