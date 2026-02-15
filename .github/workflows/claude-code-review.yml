@@ -40,6 +40,41 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          prompt: |
+            Review this PR with focus on Agent-Based Model (ABM) and Discrete Event Simulation (DES) implementation quality:
+
+            # Domain-Specific Review Criteria
+
+            ## 1. Research Translation Fidelity
+            - Does the implementation accurately reflect the paper's stated goals and key findings?
+            - Are the observable behaviors (via Stats) consistent with expected outcomes from the paper?
+            - If prior-art/ summary exists, does implementation align with experiment setup described?
+
+            ## 2. DES Framework Usage
+            - Event/Agent/Stats architecture: Are Event enums well-designed? Do agents properly implement the Agent trait?
+            - Agent behavior: Is event scheduling logic sound? Are time semantics respected (discrete usize time)?
+            - Stats as observable state: Do Stats types expose both current state AND cumulative metrics?
+            - Testing through Stats: Are tests verifying behavior through Stats interface, not internal state?
+
+            ## 3. Agent Design Quality
+            - Agent count: Are there fewer agents rather than many? Look for agents that exist purely to track state.
+            - State management: Could Agent internal state replace unnecessary helper agents?
+            - Behavior complexity: Are agent decision-making processes clear and aligned with research model?
+
+            ## 4. Observability & Verification
+            - Do Stats provide sufficient evidence to verify the implementation matches paper expectations?
+            - Can key findings from the research be observed through the Stats interface?
+            - Are tests using Stats projections to validate behavior (not testing implementation details)?
+
+            ## 5. Code Quality (Lower Priority)
+            - Rust idioms and clippy compliance (mention only if critically impacting simulation correctness)
+            - Generic code style issues should be deprioritized in favor of domain concerns above
+
+            # What NOT to Focus On
+            - Generic code review comments (formatting, naming) unless they obscure simulation logic
+            - Performance optimizations unless they affect simulation correctness
+            - Documentation style (focus on whether Stats/Events are self-explanatory)
+
+            Review PR: ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
