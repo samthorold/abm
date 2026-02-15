@@ -295,6 +295,9 @@ impl Agent<Event, Stats> for Syndicate {
                 Event::SyndicateCapitalReported {
                     syndicate_id: self.syndicate_id,
                     capital: self.capital,
+                    annual_premiums: self.annual_premiums,
+                    annual_claims: self.annual_claims,
+                    num_policies: self.stats.num_policies,
                 },
             )]);
         }

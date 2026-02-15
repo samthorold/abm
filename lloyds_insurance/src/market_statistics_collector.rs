@@ -32,6 +32,9 @@ pub struct MarketStatisticsCollector {
 struct SyndicateReport {
     capital: f64,
     is_insolvent: bool,
+    annual_premiums: f64,
+    annual_claims: f64,
+    num_policies: usize,
 }
 
 impl MarketStatisticsCollector {
@@ -56,13 +59,23 @@ impl MarketStatisticsCollector {
         self.pending_reports.clear();
     }
 
-    fn handle_syndicate_report(&mut self, syndicate_id: usize, capital: f64) {
+    fn handle_syndicate_report(
+        &mut self,
+        syndicate_id: usize,
+        capital: f64,
+        annual_premiums: f64,
+        annual_claims: f64,
+        num_policies: usize,
+    ) {
         // Store the report
         self.pending_reports.insert(
             syndicate_id,
             SyndicateReport {
                 capital,
                 is_insolvent: capital <= 0.0,
+                annual_premiums,
+                annual_claims,
+                num_policies,
             },
         );
 
@@ -82,16 +95,28 @@ impl MarketStatisticsCollector {
             .count();
         let num_insolvent = self.num_syndicates - num_solvent;
 
-        // TODO: These fields require syndicates to report more data via events
-        // Future enhancement: Extend Event::SyndicateCapitalReported to include:
-        //   - total_premiums_collected (for avg_premium calculation)
-        //   - loss_ratio (for avg_loss_ratio calculation)
-        //   - num_policies (for total_policies calculation)
-        // This will enable full validation of the paper's temporal dynamics
-        // (premium convergence, loss ratio coupling, etc.)
-        let avg_premium = 0.0;
-        let avg_loss_ratio = 0.0;
-        let total_policies = 0;
+        // Calculate premium and loss metrics from syndicate reports
+        let total_annual_premiums: f64 = self
+            .pending_reports
+            .values()
+            .map(|r| r.annual_premiums)
+            .sum();
+        let total_annual_claims: f64 = self.pending_reports.values().map(|r| r.annual_claims).sum();
+        let total_policies: usize = self.pending_reports.values().map(|r| r.num_policies).sum();
+
+        // Average premium per policy (market-wide)
+        let avg_premium = if total_policies > 0 {
+            total_annual_premiums / total_policies as f64
+        } else {
+            0.0
+        };
+
+        // Average loss ratio (market-wide)
+        let avg_loss_ratio = if total_annual_premiums > 0.0 {
+            total_annual_claims / total_annual_premiums
+        } else {
+            0.0
+        };
 
         let snapshot = MarketSnapshot {
             year: self.current_year,
@@ -121,8 +146,17 @@ impl Agent<Event, Stats> for MarketStatisticsCollector {
             Event::SyndicateCapitalReported {
                 syndicate_id,
                 capital,
+                annual_premiums,
+                annual_claims,
+                num_policies,
             } => {
-                self.handle_syndicate_report(*syndicate_id, *capital);
+                self.handle_syndicate_report(
+                    *syndicate_id,
+                    *capital,
+                    *annual_premiums,
+                    *annual_claims,
+                    *num_policies,
+                );
                 Response::new()
             }
             _ => Response::new(),
@@ -159,6 +193,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 0,
                 capital: 10_000_000.0,
+                annual_premiums: 1_000_000.0,
+                annual_claims: 800_000.0,
+                num_policies: 10,
             },
         );
         collector.act(
@@ -166,6 +203,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 1,
                 capital: 9_500_000.0,
+                annual_premiums: 1_200_000.0,
+                annual_claims: 900_000.0,
+                num_policies: 12,
             },
         );
 
@@ -188,6 +228,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 0,
                 capital: 10_000_000.0,
+                annual_premiums: 1_000_000.0,
+                annual_claims: 800_000.0,
+                num_policies: 10,
             },
         ); // Solvent
         collector.act(
@@ -195,6 +238,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 1,
                 capital: -500_000.0,
+                annual_premiums: 500_000.0,
+                annual_claims: 1_000_000.0,
+                num_policies: 5,
             },
         ); // Insolvent
         collector.act(
@@ -202,6 +248,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 2,
                 capital: 8_000_000.0,
+                annual_premiums: 900_000.0,
+                annual_claims: 700_000.0,
+                num_policies: 9,
             },
         ); // Solvent
 
@@ -222,6 +271,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 0,
                 capital: 10_000_000.0,
+                annual_premiums: 1_000_000.0,
+                annual_claims: 800_000.0,
+                num_policies: 10,
             },
         );
         collector.act(
@@ -229,6 +281,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 1,
                 capital: 9_500_000.0,
+                annual_premiums: 1_200_000.0,
+                annual_claims: 900_000.0,
+                num_policies: 12,
             },
         );
         // Snapshot 1 created when all year 1 reports received
@@ -241,6 +296,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 0,
                 capital: 11_000_000.0,
+                annual_premiums: 1_100_000.0,
+                annual_claims: 850_000.0,
+                num_policies: 11,
             },
         );
         collector.act(
@@ -248,6 +306,9 @@ mod tests {
             &Event::SyndicateCapitalReported {
                 syndicate_id: 1,
                 capital: 9_000_000.0,
+                annual_premiums: 1_000_000.0,
+                annual_claims: 950_000.0,
+                num_policies: 10,
             },
         );
         // Snapshot 2 created when all year 2 reports received
@@ -260,5 +321,40 @@ mod tests {
         );
         assert_eq!(collector.time_series.snapshots[0].year, 1);
         assert_eq!(collector.time_series.snapshots[1].year, 2);
+    }
+
+    #[test]
+    fn test_collector_calculates_premium_metrics() {
+        let mut collector = MarketStatisticsCollector::new(2);
+
+        collector.act(365, &Event::Year);
+        collector.act(
+            365,
+            &Event::SyndicateCapitalReported {
+                syndicate_id: 0,
+                capital: 10_000_000.0,
+                annual_premiums: 2_000_000.0, // 20 policies × $100k each
+                annual_claims: 1_600_000.0,   // Loss ratio = 0.8
+                num_policies: 20,
+            },
+        );
+        collector.act(
+            365,
+            &Event::SyndicateCapitalReported {
+                syndicate_id: 1,
+                capital: 9_500_000.0,
+                annual_premiums: 3_000_000.0, // 30 policies × $100k each
+                annual_claims: 2_400_000.0,   // Loss ratio = 0.8
+                num_policies: 30,
+            },
+        );
+
+        assert_eq!(collector.time_series.snapshots.len(), 1);
+        let snapshot = &collector.time_series.snapshots[0];
+
+        // Check premium metrics
+        assert_eq!(snapshot.total_policies, 50); // 20 + 30
+        assert_eq!(snapshot.avg_premium, 100_000.0); // $5M total / 50 policies
+        assert_eq!(snapshot.avg_loss_ratio, 0.8); // $4M claims / $5M premiums
     }
 }

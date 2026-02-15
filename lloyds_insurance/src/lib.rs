@@ -116,6 +116,9 @@ pub enum Event {
     SyndicateCapitalReported {
         syndicate_id: usize,
         capital: f64,
+        annual_premiums: f64,
+        annual_claims: f64,
+        num_policies: usize,
     },
     SyndicateBankrupted {
         syndicate_id: usize,
