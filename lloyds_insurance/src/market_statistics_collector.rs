@@ -2,6 +2,9 @@ use crate::{Event, MarketSnapshot, Stats, TimeSeriesStats};
 use des::{Agent, Response};
 use std::collections::HashMap;
 
+/// Number of days in a simulated year
+const DAYS_PER_YEAR: usize = 365;
+
 /// Collects market statistics over time to build a time series
 pub struct MarketStatisticsCollector {
     num_syndicates: usize,
@@ -16,9 +19,6 @@ pub struct MarketStatisticsCollector {
 #[derive(Debug, Clone)]
 struct SyndicateReport {
     capital: f64,
-    num_policies: usize,
-    total_premiums: f64,
-    loss_ratio: f64,
     is_insolvent: bool,
 }
 
@@ -34,14 +34,10 @@ impl MarketStatisticsCollector {
     }
 
     fn handle_year(&mut self, current_t: usize) {
-        // Create snapshot from previous year's data if we have pending reports
-        // (This handles the case where the previous year's snapshot wasn't created yet)
-        if self.pending_reports.len() == self.num_syndicates {
-            self.create_snapshot();
-        }
-
-        // Now start collecting for the new year
-        self.current_year = current_t / 365;
+        // Start collecting for the new year
+        // Note: Snapshots are created when all reports arrive (in handle_syndicate_report),
+        // not when the Year event arrives, since syndicates report AFTER receiving the Year event
+        self.current_year = current_t / DAYS_PER_YEAR;
         self.current_day = current_t;
         self.pending_reports.clear();
     }
@@ -52,9 +48,6 @@ impl MarketStatisticsCollector {
             syndicate_id,
             SyndicateReport {
                 capital,
-                num_policies: 0, // Will need to get from events
-                total_premiums: 0.0,
-                loss_ratio: 0.0,
                 is_insolvent: capital <= 0.0,
             },
         );
@@ -75,29 +68,11 @@ impl MarketStatisticsCollector {
             .count();
         let num_insolvent = self.num_syndicates - num_solvent;
 
-        let avg_premium = if num_solvent > 0 {
-            self.pending_reports
-                .values()
-                .filter(|r| !r.is_insolvent)
-                .map(|r| r.total_premiums)
-                .sum::<f64>()
-                / num_solvent as f64
-        } else {
-            0.0
-        };
-
-        let avg_loss_ratio = if num_solvent > 0 {
-            self.pending_reports
-                .values()
-                .filter(|r| !r.is_insolvent)
-                .map(|r| r.loss_ratio)
-                .sum::<f64>()
-                / num_solvent as f64
-        } else {
-            0.0
-        };
-
-        let total_policies: usize = self.pending_reports.values().map(|r| r.num_policies).sum();
+        // TODO: These fields require syndicates to report more data via events
+        // For now, they're set to 0 until we extend SyndicateCapitalReported
+        let avg_premium = 0.0;
+        let avg_loss_ratio = 0.0;
+        let total_policies = 0;
 
         let snapshot = MarketSnapshot {
             year: self.current_year,

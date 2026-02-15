@@ -196,14 +196,24 @@ impl Syndicate {
     }
 
     fn handle_year_end(&mut self) {
+        // Insolvent syndicates don't pay dividends
+        if self.stats.is_insolvent {
+            self.annual_premiums = 0.0;
+            self.annual_claims = 0.0;
+            return;
+        }
+
         // Calculate annual profit: Pr_t = premiums - claims
         let annual_profit = self.annual_premiums - self.annual_claims;
 
         // Pay dividend only if there's positive profit: D = γ · Pr_t
+        // Also check that we have sufficient capital to avoid causing insolvency via dividends
         if annual_profit > 0.0 {
             let dividend = self.config.profit_fraction * annual_profit;
-            self.capital -= dividend;
-            self.stats.total_dividends_paid += dividend;
+            if self.capital >= dividend {
+                self.capital -= dividend;
+                self.stats.total_dividends_paid += dividend;
+            }
         }
 
         // Reset annual counters
@@ -497,6 +507,55 @@ mod tests {
         let expected_dividend = 0.4 * (500_000.0 - 300_000.0); // 0.4 * 200k = 80k
         assert_eq!(syndicate.stats.total_dividends_paid, expected_dividend);
         assert_eq!(syndicate.capital, initial_capital - expected_dividend);
+    }
+
+    #[test]
+    fn test_no_dividend_when_insufficient_capital() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Set low capital
+        syndicate.capital = 50_000.0;
+
+        // High profit would normally trigger large dividend
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 800_000.0;
+        // Annual profit = 200k, dividend would be 80k, but capital is only 50k
+
+        syndicate.handle_year_end();
+
+        // Should NOT pay dividend because capital < dividend
+        assert_eq!(
+            syndicate.stats.total_dividends_paid, 0.0,
+            "Should not pay dividend when capital insufficient"
+        );
+        assert_eq!(syndicate.capital, 50_000.0, "Capital should be unchanged");
+    }
+
+    #[test]
+    fn test_insolvent_syndicate_no_dividend() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Mark as insolvent
+        syndicate.stats.is_insolvent = true;
+        syndicate.capital = -100_000.0;
+
+        // Would normally have profit
+        syndicate.annual_premiums = 500_000.0;
+        syndicate.annual_claims = 300_000.0;
+
+        syndicate.handle_year_end();
+
+        // Should NOT pay dividend when insolvent
+        assert_eq!(
+            syndicate.stats.total_dividends_paid, 0.0,
+            "Insolvent syndicates should not pay dividends"
+        );
+        assert_eq!(
+            syndicate.annual_premiums, 0.0,
+            "Annual counters should be reset"
+        );
     }
 
     #[test]
