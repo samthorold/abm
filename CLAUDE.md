@@ -60,6 +60,48 @@ Example: `simple_queue` implements a bank counter simulation where:
 - `Resource` manages finite resource allocation with queueing and expiry
 - Events: `Start`, `ResourceRequested`, `ResourceAcquired`, `ResourceReleased`, `ResourceRequestExpired`
 
+## Auto-Approved Commands
+
+The following commands can be executed without requiring permission prompts. These are safe, commonly-used operations for this project.
+
+### Git Commands (Read-Only and Safe Operations)
+- `git status` - Check working tree status
+- `git diff` - View changes
+- `git log` - View commit history
+- `git show` - Show commit details
+- `git branch` - List/view branches
+- `git ls-files` - List tracked files
+- `git rev-parse` - Parse git revision info
+- `git describe` - Describe commits
+- `git tag` - List tags (read-only)
+
+### GitHub CLI Commands (Read-Only Operations)
+- `gh pr view` - View pull request details
+- `gh pr list` - List pull requests
+- `gh pr status` - Check PR status
+- `gh pr checks` - View PR check status
+- `gh issue view` - View issue details
+- `gh issue list` - List issues
+- `gh repo view` - View repository info
+- `gh workflow view` - View workflow details
+- `gh run list` - List workflow runs
+- `gh run view` - View workflow run details
+- `gh api` - Make read-only API calls
+
+### Cargo Commands
+- `cargo build` - Build the workspace or specific packages
+- `cargo build -p <package>` - Build specific package
+- `cargo test` - Run all tests
+- `cargo test <test_name>` - Run specific test
+- `cargo check` - Fast compilation check
+- `cargo clippy` - Run linter
+- `cargo fmt` - Format code
+- `cargo run` - Run simulations
+- `cargo run -p <package>` - Run specific package
+- `cargo tree` - View dependency tree
+- `cargo bench` - Run benchmarks
+- `cargo doc` - Generate documentation
+
 ## Development Commands
 
 ### Build and Test
