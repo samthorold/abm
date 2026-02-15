@@ -18,6 +18,43 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Data Availability
+
+### Market Time Series (`market_timeseries.csv`)
+
+**Full historical data (all years):**
+- `year` - Simulation year (1 to num_years)
+- `loss_ratio` - Claims / Premiums ratio (primary cycle detection metric)
+- `avg_claim` - Average claim amount per customer
+
+**Final year only (zeros for years 1 to num_years-1):**
+- `total_premiums`, `total_claims` - Industry aggregates
+- `avg_price`, `min_price`, `max_price` - Price statistics
+- `herfindahl_index`, `gini_coefficient` - Market concentration
+- `num_solvent_insurers` - Number of active insurers
+
+### Insurer Snapshots (`insurer_snapshots.csv`)
+
+Currently, all snapshots are from the final year. Each row represents one insurer's final state:
+- `year` - Always equals num_years (final year only)
+- Per-insurer metrics: `capital`, `market_share`, `price`, `num_customers`, `loss_ratio`, `is_solvent`, etc.
+
+### Analysis Implications
+
+**Cycle Analysis** (`cycle_analysis.py`):
+- ✅ Works with full `loss_ratio` time series
+- ✅ AR(2) fitting, periodogram, ACF/PACF all use `loss_ratio_history`
+
+**Market Structure** (`market_structure.py`):
+- ✅ HHI and Gini computed from final year insurer snapshots
+- ⚠️ Cannot track market concentration evolution over time
+- Use final state snapshots to analyze competitive equilibrium
+
+**Parameter Sensitivity** (`parameter_sensitivity.py`):
+- ✅ Loss ratio cycle properties (amplitude, period) across parameters
+- ✅ Final state market structure comparison
+- ⚠️ Cannot analyze market structure dynamics during cycles
+
 ## Scripts Overview
 
 ### Core Analysis Scripts

@@ -97,7 +97,19 @@ def market_share_evolution(insurer_snapshots, num_insurers=20):
 
 
 def calculate_hhi_timeseries(share_evolution):
-    """Calculate HHI for each year"""
+    """
+    Calculate HHI and Gini coefficient from insurer market share data.
+
+    Note: Since insurer_snapshots.csv currently contains only final year data,
+    this function computes a single point estimate rather than a time series.
+    For full cycle analysis, use loss_ratio time series from market_timeseries.csv.
+
+    Args:
+        share_evolution: DataFrame with columns ['year', 'insurer_id', 'market_share']
+
+    Returns:
+        DataFrame with HHI and Gini values per year (currently only final year)
+    """
     hhi_data = []
 
     for year in share_evolution['year'].unique():

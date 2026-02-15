@@ -2,8 +2,24 @@
 //!
 //! This module provides structured export of simulation results to CSV and JSON formats
 //! for analysis in Python (pandas, scipy, matplotlib).
+//!
+//! ## Time Series Data Availability
+//!
+//! **Full historical tracking:**
+//! - `loss_ratio` - Primary validation metric (cycle detection)
+//! - `avg_claim` - Supporting metric for claim dynamics
+//!
+//! **Final year only:**
+//! - `total_premiums`, `total_claims` - Industry aggregates
+//! - `avg_price`, `min_price`, `max_price` - Pricing statistics
+//! - `herfindahl_index`, `gini_coefficient` - Market concentration
+//! - `num_solvent_insurers` - Market structure
+//!
+//! This design minimizes memory overhead (avoids 9 additional vectors × 100 years)
+//! and aligns with DES framework constraints (no shadow state expansion).
+//! Market structure analysis uses final state snapshots and per-insurer data.
 
-use crate::{ModelConfig, Stats};
+use crate::{MarketStats, ModelConfig, Stats};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -114,13 +130,11 @@ impl SimulationOutput {
     /// * `config` - Model configuration
     /// * `seed` - Random seed used
     /// * `num_years` - Number of years simulated
-    /// * `snapshot_interval` - Sample insurer snapshots every N years (default: 5)
     pub fn from_stats(
         all_stats: Vec<Stats>,
         config: &ModelConfig,
         seed: u64,
         num_years: usize,
-        _snapshot_interval: usize,
     ) -> Self {
         // Extract market stats
         let market_stats = all_stats
@@ -161,26 +175,11 @@ impl SimulationOutput {
             });
         }
 
-        // Use final year stats for most recent data
-        if let Some(last_point) = market_timeseries.last_mut() {
-            last_point.total_premiums = market_stats.total_premiums;
-            last_point.total_claims = market_stats.total_claims;
-            last_point.avg_price = market_stats.avg_price;
-            last_point.min_price = market_stats.min_price;
-            last_point.max_price = market_stats.max_price;
-            last_point.num_solvent_insurers = market_stats.num_solvent_insurers;
-            last_point.herfindahl_index = market_stats.herfindahl_index;
-            last_point.gini_coefficient = market_stats.gini_coefficient;
-        }
-
-        // Extract insurer snapshots (sample every N years)
+        // Extract insurer snapshots (final year only)
         let insurer_snapshots: Vec<InsurerSnapshot> = all_stats
             .iter()
             .filter_map(|s| {
                 if let Stats::Insurer(ins) = s {
-                    // Only sample at snapshot intervals
-                    // Since we don't have year-by-year insurer data, we just take the final snapshot
-                    // In a full implementation, MarketCoordinator would track this
                     Some(InsurerSnapshot {
                         year: num_years,
                         insurer_id: ins.insurer_id,
@@ -197,6 +196,35 @@ impl SimulationOutput {
                 }
             })
             .collect();
+
+        // Calculate market concentration from final insurer snapshots
+        let total_customers: usize = insurer_snapshots
+            .iter()
+            .filter(|s| s.is_solvent)
+            .map(|s| s.num_customers)
+            .sum();
+
+        let market_shares: Vec<f64> = if total_customers > 0 {
+            insurer_snapshots
+                .iter()
+                .filter(|s| s.is_solvent)
+                .map(|s| s.num_customers as f64 / total_customers as f64)
+                .collect()
+        } else {
+            vec![]
+        };
+
+        // Use final year stats for most recent data
+        if let Some(last_point) = market_timeseries.last_mut() {
+            last_point.total_premiums = market_stats.total_premiums;
+            last_point.total_claims = market_stats.total_claims;
+            last_point.avg_price = market_stats.avg_price;
+            last_point.min_price = market_stats.min_price;
+            last_point.max_price = market_stats.max_price;
+            last_point.num_solvent_insurers = market_stats.num_solvent_insurers;
+            last_point.herfindahl_index = MarketStats::calculate_herfindahl(&market_shares);
+            last_point.gini_coefficient = MarketStats::calculate_gini(&market_shares);
+        }
 
         // Calculate cycle metrics
         let cycle_metrics = CycleMetrics {

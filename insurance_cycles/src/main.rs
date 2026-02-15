@@ -266,7 +266,7 @@ fn main() {
 
         let run_dir = format!("{}/run_{}", output_dir, seed);
 
-        match SimulationOutput::from_stats(all_stats.clone(), &config, seed, num_years, 5)
+        match SimulationOutput::from_stats(all_stats.clone(), &config, seed, num_years)
             .write_all(&run_dir)
         {
             Ok(_) => {

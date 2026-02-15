@@ -81,6 +81,8 @@ struct OutputSettings {
     save_market_timeseries: bool,
     save_insurer_snapshots: bool,
     save_summary_stats: bool,
+    /// Retained for TOML backward compatibility but not used (insurer snapshots are final-year only)
+    #[allow(dead_code)]
     snapshot_interval: usize,
 }
 
@@ -185,7 +187,6 @@ fn run_simple_experiment(exp_config: &ExperimentConfig, output_dir: &Path) {
             &model_config,
             seed,
             exp_config.experiment.num_years,
-            exp_config.output.snapshot_interval,
         );
 
         // Save individual run
@@ -287,7 +288,6 @@ fn run_parameter_sweep(exp_config: &ExperimentConfig, sweep: &SweepConfig, outpu
                 &model_config,
                 seed,
                 exp_config.experiment.num_years,
-                exp_config.output.snapshot_interval,
             );
 
             // Save individual run
