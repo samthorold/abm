@@ -236,9 +236,10 @@ impl MarketCoordinator {
                 .map(|(&insurer_id, &price)| {
                     let insurer_pos = self.insurer_positions[&insurer_id];
                     let distance = circular_distance(customer.position, insurer_pos);
-                    // Add ±5% noise to reduce deterministic market concentration
-                    let noise = self.allocation_rng.gen_range(-0.05..0.05) * price;
-                    let total_cost = price + gamma * distance + noise;
+                    // Add ±5% noise to total cost (bounded rationality)
+                    let base_cost = price + gamma * distance;
+                    let noise = self.allocation_rng.gen_range(-0.05..0.05) * base_cost;
+                    let total_cost = base_cost + noise;
                     (insurer_id, total_cost)
                 })
                 .collect();
