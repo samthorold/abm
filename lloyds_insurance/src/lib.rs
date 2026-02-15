@@ -503,6 +503,8 @@ impl ModelConfig {
     pub fn scenario_1() -> Self {
         Self {
             mean_cat_events_per_year: 0.0, // Attritional losses only (no catastrophes)
+            lead_top_k: 2,                 // Lead selection enabled
+            follow_top_k: 5, // Follow selection enabled (base case includes syndication)
             ..Self::default()
         }
     }
@@ -529,7 +531,9 @@ impl ModelConfig {
 
     pub fn scenario_4() -> Self {
         Self {
-            follow_top_k: 5, // Enable followers
+            mean_cat_events_per_year: 0.0, // Attritional only (like Scenario 1)
+            lead_top_k: 2,                 // Lead selection enabled
+            follow_top_k: 5, // Follow selection enabled (same as S1, focus is on dynamics not presence)
             ..Self::default()
         }
     }
@@ -1891,7 +1895,8 @@ mod tests {
     #[test]
     #[cfg_attr(not(feature = "long-tests"), ignore)]
     fn test_var_em_achieves_near_zero_uniform_deviation() {
-        // Paper claim: VaR EM achieves uniform deviation "close to zero"
+        // Paper claim (Figure 8): VaR EM achieves uniform deviation "close to zero"
+        // Figure 8 shows values clustering around 0.05-0.08 for VaR EM
 
         use test_helpers::*;
 
@@ -1904,10 +1909,13 @@ mod tests {
             "Mean uniform deviation (years 10-50): {:.3}",
             mean_deviation
         );
+        println!("Paper Figure 8 shows VaR EM clustering around 0.05-0.08");
 
+        // Tightened from 0.15 to 0.10 based on paper Figure 8 results
         assert!(
-            mean_deviation < 0.15,
-            "VaR EM should achieve near-zero uniform deviation (< 0.15), got {:.3}",
+            mean_deviation < 0.10,
+            "VaR EM should achieve near-zero uniform deviation (< 0.10), got {:.3}. \
+             Paper Figure 8 shows values ~0.05-0.08.",
             mean_deviation
         );
 
@@ -1960,25 +1968,30 @@ mod tests {
             }
         }
 
-        if total_cat_events > 0 {
-            let spike_fraction = spike_count as f64 / total_cat_events as f64;
-            println!("Catastrophe events analyzed: {}", total_cat_events);
-            println!(
-                "Events with post-cat premium spike: {} ({:.1}%)",
-                spike_count,
-                spike_fraction * 100.0
-            );
+        // Statistical expectation: 5 reps × 50 years × 0.05 events/year ≈ 12 catastrophes
+        // Require at least 3 events to avoid silent test passage
+        assert!(
+            total_cat_events >= 3,
+            "Expected ~12 catastrophe events in 5×50yr replications, got {}. \
+             Check configuration if zero events detected.",
+            total_cat_events
+        );
 
-            assert!(
-                spike_fraction > 0.5,
-                "Majority of catastrophes should cause premium spikes, got {:.1}%",
-                spike_fraction * 100.0
-            );
+        let spike_fraction = spike_count as f64 / total_cat_events as f64;
+        println!("Catastrophe events analyzed: {}", total_cat_events);
+        println!(
+            "Events with post-cat premium spike: {} ({:.1}%)",
+            spike_count,
+            spike_fraction * 100.0
+        );
 
-            println!("✓ Paper claim validated: Premiums spike after catastrophes");
-        } else {
-            println!("⚠ No catastrophe events detected for analysis (may need more replications)");
-        }
+        assert!(
+            spike_fraction > 0.5,
+            "Majority of catastrophes should cause premium spikes, got {:.1}%",
+            spike_fraction * 100.0
+        );
+
+        println!("✓ Paper claim validated: Premiums spike after catastrophes");
     }
 
     #[test]
@@ -2053,25 +2066,31 @@ mod tests {
             }
         }
 
-        if total_events_checked > 0 {
-            let convergence_fraction = convergence_count as f64 / total_events_checked as f64;
-            println!("Catastrophe events analyzed: {}", total_events_checked);
-            println!(
-                "Events with convergence (5yr < 1yr premium): {} ({:.1}%)",
-                convergence_count,
-                convergence_fraction * 100.0
-            );
+        // Statistical expectation: 5 reps × 50 years × 0.05 events/year ≈ 12 catastrophes
+        // Need events in years 0-45 to have 5-year follow-up, expect ~10 usable events
+        // Require at least 3 events to avoid silent test passage
+        assert!(
+            total_events_checked >= 3,
+            "Expected ~10 catastrophe events with 5-year follow-up, got {}. \
+             Check configuration if zero events detected.",
+            total_events_checked
+        );
 
-            assert!(
-                convergence_fraction > 0.5,
-                "Majority of catastrophes should show convergence (5yr < 1yr premium), got {:.1}%",
-                convergence_fraction * 100.0
-            );
+        let convergence_fraction = convergence_count as f64 / total_events_checked as f64;
+        println!("Catastrophe events analyzed: {}", total_events_checked);
+        println!(
+            "Events with convergence (5yr < 1yr premium): {} ({:.1}%)",
+            convergence_count,
+            convergence_fraction * 100.0
+        );
 
-            println!("✓ Paper claim validated: Premiums converge after catastrophe spike");
-        } else {
-            println!("⚠ No catastrophe events with sufficient follow-up years for analysis");
-        }
+        assert!(
+            convergence_fraction > 0.5,
+            "Majority of catastrophes should show convergence (5yr < 1yr premium), got {:.1}%",
+            convergence_fraction * 100.0
+        );
+
+        println!("✓ Paper claim validated: Premiums converge after catastrophe spike");
     }
 
     // ========================================================================
@@ -2114,7 +2133,23 @@ mod tests {
     #[test]
     #[cfg_attr(not(feature = "long-tests"), ignore)]
     fn test_scenario1_premiums_converge_to_fair_price() {
-        // Paper claim (Figure 4b): Premiums converge to ~$300k fair price in Scenario 1
+        // Paper claim (Figure 4b): Premiums converge to fair price in Scenario 1
+        //
+        // Fair price calculation (per syndicate participation, not per risk):
+        // - Expected loss per risk = yearly_claim_frequency × gamma_mean
+        //   = 0.1 × $3M = $300k (total risk fair price)
+        // - Lead syndicate share (50% line) = 0.5 × $300k = $150k
+        // - With volatility loading (20%) = $150k × 1.2 = $180k expected lead premium
+        //
+        // NOTE: avg_premium in MarketSnapshot is averaged across all syndicate
+        // participations (leads + follows), so expected value is weighted by line sizes.
+        // With current config: leads take 50%, follows take 10% each.
+        //
+        // Statistical limitations: 10 replications provide trend validation but not
+        // rigorous significance testing. Wide tolerance (±50%) accounts for:
+        // - Stochastic variance in claim timing
+        // - Market collapse in some replications (early insolvencies)
+        // - EWMA markup adjustment lag
 
         use test_helpers::*;
 
@@ -2136,17 +2171,35 @@ mod tests {
             let overall_mean =
                 late_period_premiums.iter().sum::<f64>() / late_period_premiums.len() as f64;
 
-            println!("Mean premium (years 40-50): ${:.0}", overall_mean);
-            println!("Theoretical fair price: ~$150k (with loading: ~$180k)");
+            // Calculate standard deviation for effect size reporting
+            let variance = late_period_premiums
+                .iter()
+                .map(|p| (p - overall_mean).powi(2))
+                .sum::<f64>()
+                / late_period_premiums.len() as f64;
+            let std_dev = variance.sqrt();
+
+            println!(
+                "Mean premium (years 40-50): ${:.0} ± ${:.0}",
+                overall_mean, std_dev
+            );
+            println!("Theoretical fair price: $150k (lead 50% line), with 20% loading: $180k");
+            println!(
+                "Replication stats: n={}, CV={:.2}",
+                late_period_premiums.len(),
+                std_dev / overall_mean
+            );
 
             // Relaxed bounds: ±50% tolerance due to market variability
+            // This validates directional convergence rather than exact quantitative match
             assert!(
                 (75_000.0..=300_000.0).contains(&overall_mean),
-                "Late-period premium ${:.0} should be within ±50% of $150k fair price",
+                "Late-period premium ${:.0} should be within ±50% of $150k fair price. \
+                 Wide tolerance accounts for stochastic variance and market collapse in some replications.",
                 overall_mean
             );
 
-            println!("✓ Paper claim validated: Premiums converge to fair price");
+            println!("✓ Paper claim validated: Premiums converge toward fair price");
         } else {
             println!("⚠ Insufficient active market data for validation (early collapses)");
         }
