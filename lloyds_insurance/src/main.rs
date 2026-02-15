@@ -1,7 +1,7 @@
 use des::EventLoop;
 use lloyds_insurance::{
-    AttritionalLossGenerator, Broker, BrokerSyndicateNetwork, CatastropheLossGenerator,
-    CentralRiskRepository, Event, ModelConfig, Stats, Syndicate, TimeGenerator,
+    AttritionalLossGenerator, BrokerPool, CatastropheLossGenerator, CentralRiskRepository, Event,
+    MarketStatisticsCollector, ModelConfig, Stats, Syndicate, TimeGenerator,
 };
 
 fn main() {
@@ -33,20 +33,15 @@ fn main() {
         agents.push(Box::new(Syndicate::new(i, config.clone())));
     }
 
-    // Add 25 brokers (1:5 ratio)
-    for i in 0..25 {
-        agents.push(Box::new(Broker::new(i, config.clone(), (i as u64) * 12345)));
-    }
+    // Add broker pool (manages 25 brokers internally, 1:5 ratio)
+    agents.push(Box::new(BrokerPool::new(25, config.clone(), 12345)));
 
-    // Add broker-syndicate network
-    agents.push(Box::new(BrokerSyndicateNetwork::new(
+    // Add central risk repository (handles syndicate selection and risk tracking)
+    agents.push(Box::new(CentralRiskRepository::new(
         config.clone(),
         5,
         54321,
     )));
-
-    // Add central risk repository
-    agents.push(Box::new(CentralRiskRepository::new()));
 
     // Add attritional loss generator
     agents.push(Box::new(AttritionalLossGenerator::new(
@@ -61,14 +56,17 @@ fn main() {
         77777,
     )));
 
+    // Add market statistics collector
+    agents.push(Box::new(MarketStatisticsCollector::new(5)));
+
     println!("Agents initialized:");
     println!("  - 1 Time Generator");
     println!("  - 5 Syndicates");
-    println!("  - 25 Brokers");
-    println!("  - 1 Broker-Syndicate Network");
-    println!("  - 1 Central Risk Repository");
+    println!("  - 1 Broker Pool (managing 25 brokers)");
+    println!("  - 1 Central Risk Repository (handles syndicate selection and risk tracking)");
     println!("  - 1 Attritional Loss Generator");
-    println!("  - 1 Catastrophe Loss Generator\n");
+    println!("  - 1 Catastrophe Loss Generator");
+    println!("  - 1 Market Statistics Collector\n");
 
     // Create event loop
     let mut event_loop = EventLoop::new(events, agents);
@@ -106,6 +104,7 @@ fn main() {
         println!("  Policies: {}", s.num_policies);
         println!("  Premiums Collected: ${:.2}", s.total_premiums_collected);
         println!("  Claims Paid: ${:.2}", s.total_claims_paid);
+        println!("  Dividends Paid: ${:.2}", s.total_dividends_paid);
         println!("  Loss Ratio: {:.2}", s.loss_ratio);
         println!("  Profit: ${:.2}", s.profit);
         println!("  Insolvent: {}", s.is_insolvent);
@@ -204,20 +203,28 @@ fn main() {
         }
     }
 
+    // Extract time series data from market statistics collector
+    let time_series_stats = stats.iter().find_map(|s| match s {
+        Stats::TimeSeriesStats(ts) => Some(ts),
+        _ => None,
+    });
+
     // Export time-series data to CSV
-    export_time_series_csv(&syndicate_stats);
+    if let Some(ts) = time_series_stats {
+        export_time_series_csv(ts);
+    } else {
+        eprintln!("Warning: No time series data found");
+    }
 
     println!("\n==============================================");
     println!("Simulation completed successfully!");
     println!("==============================================");
 }
 
-fn export_time_series_csv(syndicate_stats: &[&lloyds_insurance::SyndicateStats]) {
+fn export_time_series_csv(time_series: &lloyds_insurance::TimeSeriesStats) {
     use std::fs::File;
     use std::io::Write;
 
-    // For now, export a simple CSV with final statistics
-    // In a full implementation, we'd track these metrics over time
     let output_path = "lloyds_insurance/time_series.csv";
 
     let mut file = match File::create(output_path) {
@@ -231,31 +238,34 @@ fn export_time_series_csv(syndicate_stats: &[&lloyds_insurance::SyndicateStats])
     // Write header
     if let Err(e) = writeln!(
         file,
-        "syndicate_id,initial_capital,final_capital,total_premiums,total_claims,loss_ratio,profit,is_insolvent,num_policies"
+        "year,day,avg_premium,avg_loss_ratio,num_solvent_syndicates,num_insolvent_syndicates,total_capital,total_policies"
     ) {
         eprintln!("Warning: Could not write CSV header: {}", e);
         return;
     }
 
-    // Write data for each syndicate
-    for s in syndicate_stats {
+    // Write data for each snapshot
+    for snapshot in &time_series.snapshots {
         if let Err(e) = writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{}",
-            s.syndicate_id,
-            s.initial_capital,
-            s.capital,
-            s.total_premiums_collected,
-            s.total_claims_paid,
-            s.loss_ratio,
-            s.profit,
-            s.is_insolvent,
-            s.num_policies
+            "{},{},{:.2},{:.4},{},{},{:.2},{}",
+            snapshot.year,
+            snapshot.day,
+            snapshot.avg_premium,
+            snapshot.avg_loss_ratio,
+            snapshot.num_solvent_syndicates,
+            snapshot.num_insolvent_syndicates,
+            snapshot.total_capital,
+            snapshot.total_policies
         ) {
             eprintln!("Warning: Could not write CSV row: {}", e);
             return;
         }
     }
 
-    println!("\nTime series data exported to: {}", output_path);
+    println!(
+        "\nTime series data exported to: {} ({} snapshots)",
+        output_path,
+        time_series.snapshots.len()
+    );
 }

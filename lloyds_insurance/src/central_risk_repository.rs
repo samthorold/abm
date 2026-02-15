@@ -1,20 +1,73 @@
-use crate::{CentralRiskRepositoryStats, Event, Policy, Quote, Risk, Stats};
+use crate::{CentralRiskRepositoryStats, Event, ModelConfig, Policy, Quote, Risk, Stats};
 use des::{Agent, Response};
+use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::collections::HashMap;
 
 /// Central repository that tracks all risks, quotes, and policies
-#[derive(Default)]
+/// Also handles syndicate selection for quote requests (previously in BrokerSyndicateNetwork)
 pub struct CentralRiskRepository {
     risks: HashMap<usize, Risk>,
     lead_quotes: HashMap<usize, Vec<Quote>>, // risk_id -> quotes
     follow_quotes: HashMap<usize, Vec<Quote>>, // risk_id -> quotes
     policies: HashMap<usize, Policy>,        // risk_id -> policy
     stats: CentralRiskRepositoryStats,
+
+    // Syndicate selection (folded from BrokerSyndicateNetwork)
+    config: ModelConfig,
+    num_syndicates: usize,
+    rng: StdRng,
 }
 
 impl CentralRiskRepository {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(config: ModelConfig, num_syndicates: usize, seed: u64) -> Self {
+        Self {
+            risks: HashMap::new(),
+            lead_quotes: HashMap::new(),
+            follow_quotes: HashMap::new(),
+            policies: HashMap::new(),
+            stats: CentralRiskRepositoryStats::new(),
+            config,
+            num_syndicates,
+            rng: StdRng::seed_from_u64(seed),
+        }
+    }
+
+    /// Select syndicates for lead quote requests (random topology)
+    fn select_syndicates_for_lead(&mut self, _risk_id: usize) -> Vec<usize> {
+        let mut syndicates: Vec<usize> = (0..self.num_syndicates).collect();
+
+        // Shuffle and take top_k
+        for i in 0..syndicates.len() {
+            let j = self.rng.gen_range(i..syndicates.len());
+            syndicates.swap(i, j);
+        }
+
+        syndicates
+            .into_iter()
+            .take(self.config.lead_top_k)
+            .collect()
+    }
+
+    /// Select syndicates for follow quote requests (random topology, excluding lead)
+    fn select_syndicates_for_follow(
+        &mut self,
+        _risk_id: usize,
+        _lead_syndicate: usize,
+    ) -> Vec<usize> {
+        let mut syndicates: Vec<usize> = (0..self.num_syndicates).collect();
+
+        // Shuffle and take top_k
+        for i in 0..syndicates.len() {
+            let j = self.rng.gen_range(i..syndicates.len());
+            syndicates.swap(i, j);
+        }
+
+        syndicates
+            .into_iter()
+            .take(self.config.follow_top_k)
+            .collect()
     }
 
     fn register_risk(&mut self, risk_id: usize, peril_region: usize, limit: f64, broker_id: usize) {
@@ -234,7 +287,21 @@ impl Agent<Event, Stats> for CentralRiskRepository {
                 broker_id,
             } => {
                 self.register_risk(*risk_id, *peril_region, *limit, *broker_id);
-                Response::new()
+
+                // Select syndicates and request lead quotes (folded from BrokerSyndicateNetwork)
+                let mut events = Vec::new();
+                let lead_syndicates = self.select_syndicates_for_lead(*risk_id);
+                for syndicate_id in lead_syndicates {
+                    events.push((
+                        current_t,
+                        Event::LeadQuoteRequested {
+                            risk_id: *risk_id,
+                            syndicate_id,
+                        },
+                    ));
+                }
+
+                Response::events(events)
             }
             Event::LeadQuoteOffered {
                 risk_id,
@@ -252,6 +319,29 @@ impl Agent<Event, Stats> for CentralRiskRepository {
             } => {
                 self.register_follow_quote(*risk_id, *syndicate_id, *line_size);
                 Response::new()
+            }
+            Event::LeadQuoteAccepted {
+                risk_id,
+                syndicate_id,
+            } => {
+                // Once lead is selected, request follow quotes (folded from BrokerSyndicateNetwork)
+                let mut events = Vec::new();
+                let follow_syndicates = self.select_syndicates_for_follow(*risk_id, *syndicate_id);
+                for follower_id in follow_syndicates {
+                    if follower_id != *syndicate_id {
+                        // Don't ask lead to follow
+                        events.push((
+                            current_t,
+                            Event::FollowQuoteRequested {
+                                risk_id: *risk_id,
+                                syndicate_id: follower_id,
+                                lead_price: 0.0, // Will be filled by repository
+                            },
+                        ));
+                    }
+                }
+
+                Response::events(events)
             }
             Event::LeadQuoteSelectionDeadline { risk_id } => {
                 Response::events(self.select_lead(*risk_id, current_t))
@@ -283,7 +373,8 @@ mod tests {
 
     #[test]
     fn test_register_risk() {
-        let mut repo = CentralRiskRepository::new();
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
         repo.register_risk(1, 0, 10_000_000.0, 0);
         assert_eq!(repo.stats.total_risks, 1);
         assert!(repo.risks.contains_key(&1));
@@ -291,7 +382,8 @@ mod tests {
 
     #[test]
     fn test_select_lead_cheapest() {
-        let mut repo = CentralRiskRepository::new();
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
         repo.register_risk(1, 0, 10_000_000.0, 0);
         repo.register_lead_quote(1, 0, 300_000.0, 0.5);
         repo.register_lead_quote(1, 1, 250_000.0, 0.5); // Cheaper
@@ -309,7 +401,8 @@ mod tests {
 
     #[test]
     fn test_catastrophe_cascade() {
-        let mut repo = CentralRiskRepository::new();
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
 
         // Create 3 risks in peril region 0
         for i in 0..3 {
@@ -323,5 +416,60 @@ mod tests {
 
         // Should generate 3 claim events (one per risk)
         assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_selects_lead_syndicates() {
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config.clone(), 5, 12345);
+
+        let selected = repo.select_syndicates_for_lead(1);
+        assert_eq!(selected.len(), config.lead_top_k);
+    }
+
+    #[test]
+    fn test_responds_to_risk_broadcast_with_lead_quote_requests() {
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
+
+        let resp = repo.act(
+            0,
+            &Event::RiskBroadcasted {
+                risk_id: 1,
+                peril_region: 0,
+                limit: 10_000_000.0,
+                broker_id: 0,
+            },
+        );
+
+        // Should emit LeadQuoteRequested events
+        assert!(!resp.events.is_empty());
+        assert!(
+            resp.events
+                .iter()
+                .all(|(_, e)| matches!(e, Event::LeadQuoteRequested { .. }))
+        );
+    }
+
+    #[test]
+    fn test_responds_to_lead_quote_accepted_with_follow_requests() {
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
+
+        let resp = repo.act(
+            0,
+            &Event::LeadQuoteAccepted {
+                risk_id: 1,
+                syndicate_id: 0,
+            },
+        );
+
+        // Should emit FollowQuoteRequested events
+        assert!(!resp.events.is_empty());
+        assert!(
+            resp.events
+                .iter()
+                .all(|(_, e)| matches!(e, Event::FollowQuoteRequested { .. }))
+        );
     }
 }

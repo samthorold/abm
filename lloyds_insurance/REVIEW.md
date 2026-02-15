@@ -149,11 +149,50 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
 
 ## Recommendations (Prioritised)
 
-1. **Fix scenario configs**: Make scenario_1 have `mean_cat_events_per_year: 0.0`
-2. **Add dividend payments** on Year events — without this, capital dynamics are unrealistic
-3. **Populate TimeSeriesStats** from syndicate capital/premium/loss data on Month or Year events — this is where all validation evidence must come from
-4. **Consolidate brokers** into a single BrokerPool agent
-5. **Fold BrokerSyndicateNetwork** into Broker or CentralRiskRepository
-6. **Implement underwriting markup** — required for underwriting cycle emergence
+1. ✅ **COMPLETED - Fix scenario configs**: Make scenario_1 have `mean_cat_events_per_year: 0.0`
+   - Changed `scenario_1()` to explicitly set `mean_cat_events_per_year: 0.0`
+   - Added tests: `test_scenario_1_has_no_catastrophes`, `test_scenario_2_has_catastrophes`, `test_scenarios_1_and_2_are_distinct`
+   - Verified simulation output: 0 catastrophes, $0 catastrophe loss
+2. ✅ **COMPLETED - Add dividend payments** on Year events — formula D = γ · Pr_t
+   - Added `annual_premiums` and `annual_claims` tracking to Syndicate
+   - Implemented `handle_year_end()`: calculates annual profit, pays dividend (40% of profit if positive), resets counters
+   - Added `Event::Year` handler in `act()` method
+   - Added `total_dividends_paid` to SyndicateStats
+   - Added 4 tests: profitable year, loss year, accumulation, event triggering
+   - Verified simulation output: syndicates paying dividends ($2.29M, $1.91M, etc.) making capital dynamics realistic
+3. ✅ **COMPLETED - Populate TimeSeriesStats** from syndicate capital/premium/loss data on Year events
+   - Created `MarketStatisticsCollector` agent to aggregate market snapshots over time
+   - Syndicates emit `SyndicateCapitalReported` events on Year (even when insolvent)
+   - Collector aggregates reports and creates `MarketSnapshot` entries
+   - Updated CSV export to write actual time series data (year, capital, loss ratios, solvency counts)
+   - Added 4 tests for collector behavior
+   - Verified simulation output: 50 annual snapshots showing capital evolution and insolvencies over time
+4. ✅ **COMPLETED - Consolidate brokers** into a single BrokerPool agent
+   - Created `BrokerPool` agent managing N broker states internally
+   - Each broker maintains independent RNG, risk ID counter, and stats
+   - Risk ownership tracked in single HashMap for O(1) lookup vs O(N) broadcast
+   - Reduces agent count from 36 to 11 (71% reduction in broadcast fan-out)
+   - Added 6 tests for BrokerPool behavior
+   - Verified simulation output: identical behavior to 25 individual brokers
+5. ✅ **COMPLETED - Fold BrokerSyndicateNetwork** into CentralRiskRepository
+   - Moved syndicate selection logic into CentralRiskRepository
+   - Added config, num_syndicates, rng fields to CentralRiskRepository
+   - RiskBroadcasted event now triggers LeadQuoteRequested events
+   - LeadQuoteAccepted event now triggers FollowQuoteRequested events
+   - Removed BrokerSyndicateNetwork agent entirely
+   - Reduces agent count from 11 to 10 (9% reduction in broadcast fan-out)
+   - Added 3 tests for syndicate selection behavior
+   - Verified simulation output: identical behavior with one less agent
+6. ✅ **COMPLETED - Implement underwriting markup** (Equation 3: P_t = P_at · e^(m_t))
+   - Added `markup_m_t` field to Syndicate to track EWMA of market conditions
+   - Implemented `apply_underwriting_markup()` method: multiplies actuarial price by e^(m_t)
+   - Implemented `update_underwriting_markup()` method: EWMA using loss ratios
+   - Formula: m_t = β · m_{t-1} + (1-β) · log(loss_ratio_t)
+   - High loss ratios (>1) → positive m_t → higher premiums (competitive pressure)
+   - Low loss ratios (<1) → negative m_t → lower premiums (market competition)
+   - Markup updated on Year events using annual loss ratio data
+   - Applied markup in lead and follow quote handlers
+   - Added 3 tests verifying markup mechanism works correctly
+   - Verified simulation output: premiums now respond to loss experience
 7. **Tighten the loss ratio test** or add a longer-running integration test with narrower bounds
 8. **Implement follow pricing strength** — the lead-follow story is the paper's strongest validation (zero insolvencies in Scenario 4)
