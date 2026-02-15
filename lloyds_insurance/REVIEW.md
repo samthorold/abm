@@ -174,7 +174,15 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
    - Reduces agent count from 36 to 11 (71% reduction in broadcast fan-out)
    - Added 6 tests for BrokerPool behavior
    - Verified simulation output: identical behavior to 25 individual brokers
-5. **Fold BrokerSyndicateNetwork** into Broker or CentralRiskRepository
+5. ✅ **COMPLETED - Fold BrokerSyndicateNetwork** into CentralRiskRepository
+   - Moved syndicate selection logic into CentralRiskRepository
+   - Added config, num_syndicates, rng fields to CentralRiskRepository
+   - RiskBroadcasted event now triggers LeadQuoteRequested events
+   - LeadQuoteAccepted event now triggers FollowQuoteRequested events
+   - Removed BrokerSyndicateNetwork agent entirely
+   - Reduces agent count from 11 to 10 (9% reduction in broadcast fan-out)
+   - Added 3 tests for syndicate selection behavior
+   - Verified simulation output: identical behavior with one less agent
 6. **Implement underwriting markup** — required for underwriting cycle emergence
 7. **Tighten the loss ratio test** or add a longer-running integration test with narrower bounds
 8. **Implement follow pricing strength** — the lead-follow story is the paper's strongest validation (zero insolvencies in Scenario 4)

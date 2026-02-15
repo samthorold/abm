@@ -557,7 +557,7 @@ mod tests {
             Box::new(Broker::new(0, config.clone(), 12345)),
             Box::new(Broker::new(1, config.clone(), 23456)),
             Box::new(BrokerSyndicateNetwork::new(config.clone(), 2, 54321)),
-            Box::new(CentralRiskRepository::new()),
+            Box::new(CentralRiskRepository::new(config.clone(), 2, 11111)),
             Box::new(AttritionalLossGenerator::new(config.clone(), 99999)),
         ];
 
