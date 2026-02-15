@@ -72,10 +72,10 @@ impl Syndicate {
             annual_claims: 0.0,
             annual_policies_written: 0,
             annual_claims_count: 0,
-            // Balanced initial markup: 0.15 → e^0.15 ≈ 1.162 (16.2% loading)
-            // Prudent margin for uncertainty while avoiding aggressive overpricing
-            // Combined with 3-year warmup for stable market emergence
-            markup_m_t: 0.15,
+            // Start at actuarially fair pricing (m_t = 0)
+            // Markup will adjust via EWMA based on observed loss ratios
+            // Per paper Section 4.3.2: no initial bias specified
+            markup_m_t: 0.0,
             prior_year_loss_ratio: None, // No prior experience yet
             industry_lambda_t,
             industry_mu_t,
@@ -475,17 +475,15 @@ impl Syndicate {
         // Update m_t using EWMA: m_t = β · m_{t-1} + (1-β) · signal_t
         // where signal_t = log(loss_ratio_t)
         //
+        // Per paper Section 4.3.2 (Underwriting Sub-Process):
+        // "m_t captures competitive pressure based on loss experience"
+        //
         // This captures competitive pressure:
         // - High loss ratios (>1) → positive signal → m_t increases → higher premiums
         // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
         // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
         //
-        // NOTE: Uses 3-year warmup to skip initialization artifacts from calendar-year accounting.
-        // - Year 0: Loss ratio artificially low (policies written late in year → claims in year 1)
-        // - Year 1-2: Allow market to stabilize with fair pricing
-        // - Year 3+: Use prior year's loss ratio for responsive pricing
-        //
-        // This minimal warmup prevents underpricing cascade while maintaining responsiveness.
+        // Note: EWMA smoothing (β=0.2) provides temporal stability
 
         let current_year_loss_ratio = if self.annual_premiums > 0.0 {
             Some(self.annual_claims / self.annual_premiums)
@@ -493,20 +491,16 @@ impl Syndicate {
             None
         };
 
-        // Update markup after 3-year warmup, using prior year's loss ratio
-        let warmup_years = 3;
-        if self.years_elapsed >= warmup_years
-            && let Some(prior_loss_ratio) = self.prior_year_loss_ratio
-        {
-            let signal = prior_loss_ratio.ln(); // log(loss_ratio)
+        // Update markup using current year's loss ratio (per paper specification)
+        if let Some(loss_ratio) = current_year_loss_ratio {
+            let signal = loss_ratio.ln(); // log(loss_ratio)
             let beta = self.config.underwriter_recency_weight;
 
             // EWMA update
             self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
         }
-        // Years 0-1: Warmup period, markup stays at initial value (0.0)
 
-        // Shift history: current → prior
+        // Track history for potential future use
         self.prior_year_loss_ratio = current_year_loss_ratio;
     }
 
@@ -1094,13 +1088,13 @@ mod tests {
             actuarial_price
         );
 
-        // Apply 15% markup: $180k * e^0.15 ≈ $209k
+        // Apply markup (m_t = 0.0 initially, so final = actuarial)
         let final_price = syndicate.apply_underwriting_markup(actuarial_price);
-        let expected_final = actuarial_price * 0.15_f64.exp(); // e^0.15 ≈ 1.162
+        let expected_final = actuarial_price * syndicate.markup_m_t.exp(); // e^0.0 = 1.0
 
         assert!(
             (final_price - expected_final).abs() < 1_000.0,
-            "Final price should be actuarial * e^0.15, expected ${:.0}, got ${:.0}",
+            "Final price should be actuarial * e^m_t, expected ${:.0}, got ${:.0}",
             expected_final,
             final_price
         );
@@ -1135,10 +1129,10 @@ mod tests {
         println!("\n=== Quote Cycle Debug ===");
         println!("Quoted premium: ${:.0}", quoted_premium);
 
-        // Expected: ~$209k based on our unit test
+        // Expected: ~$180k (actuarial price with 20% volatility loading, m_t=0.0)
         assert!(
-            quoted_premium > 200_000.0,
-            "Quoted premium should be >$200k, got ${:.0}",
+            (quoted_premium - 180_000.0).abs() < 5_000.0,
+            "Quoted premium should be ~$180k, got ${:.0}",
             quoted_premium
         );
 
