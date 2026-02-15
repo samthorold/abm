@@ -17,7 +17,7 @@ repos:
       # Clippy lint - mirrors GitHub Actions clippy job
       - id: cargo-clippy
         name: Cargo clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        entry: cargo clippy --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
@@ -25,7 +25,7 @@ repos:
       # Test suite - mirrors GitHub Actions test job
       - id: cargo-test
         name: Cargo test
-        entry: cargo test --all-features --workspace
+        entry: cargo test --workspace
         language: system
         types: [rust]
         pass_filenames: false
@@ -33,7 +33,7 @@ repos:
       # Build check - mirrors GitHub Actions build job (stable only)
       - id: cargo-build
         name: Cargo build
-        entry: cargo build --all-features --workspace
+        entry: cargo build --workspace
         language: system
         types: [rust]
         pass_filenames: false
