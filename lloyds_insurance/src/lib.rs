@@ -426,7 +426,10 @@ impl Default for ModelConfig {
 
 impl ModelConfig {
     pub fn scenario_1() -> Self {
-        Self::default()
+        Self {
+            mean_cat_events_per_year: 0.0, // Attritional losses only (no catastrophes)
+            ..Self::default()
+        }
     }
 
     pub fn scenario_2() -> Self {
@@ -502,6 +505,34 @@ mod tests {
         assert_eq!(ts_stats.snapshots.len(), 1);
         assert_eq!(ts_stats.snapshots[0].year, 1);
         assert_eq!(ts_stats.snapshots[0].total_policies, 1000);
+    }
+
+    #[test]
+    fn test_scenario_1_has_no_catastrophes() {
+        let config = ModelConfig::scenario_1();
+        assert_eq!(
+            config.mean_cat_events_per_year, 0.0,
+            "Scenario 1 should have no catastrophe events (attritional only)"
+        );
+    }
+
+    #[test]
+    fn test_scenario_2_has_catastrophes() {
+        let config = ModelConfig::scenario_2();
+        assert_eq!(
+            config.mean_cat_events_per_year, 0.05,
+            "Scenario 2 should have catastrophe events"
+        );
+    }
+
+    #[test]
+    fn test_scenarios_1_and_2_are_distinct() {
+        let s1 = ModelConfig::scenario_1();
+        let s2 = ModelConfig::scenario_2();
+        assert_ne!(
+            s1.mean_cat_events_per_year, s2.mean_cat_events_per_year,
+            "Scenarios 1 and 2 must differ in catastrophe frequency"
+        );
     }
 
     #[test]

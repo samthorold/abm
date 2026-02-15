@@ -149,7 +149,10 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
 
 ## Recommendations (Prioritised)
 
-1. **Fix scenario configs**: Make scenario_1 have `mean_cat_events_per_year: 0.0`
+1. ✅ **COMPLETED - Fix scenario configs**: Make scenario_1 have `mean_cat_events_per_year: 0.0`
+   - Changed `scenario_1()` to explicitly set `mean_cat_events_per_year: 0.0`
+   - Added tests: `test_scenario_1_has_no_catastrophes`, `test_scenario_2_has_catastrophes`, `test_scenarios_1_and_2_are_distinct`
+   - Verified simulation output: 0 catastrophes, $0 catastrophe loss
 2. **Add dividend payments** on Year events — without this, capital dynamics are unrealistic
 3. **Populate TimeSeriesStats** from syndicate capital/premium/loss data on Month or Year events — this is where all validation evidence must come from
 4. **Consolidate brokers** into a single BrokerPool agent
