@@ -1,3 +1,11 @@
 target
 .DS_Store
 *.csv
+
+# Experiment outputs
+insurance_cycles/results/
+
+# Python analysis
+insurance_cycles/analysis/venv/
+insurance_cycles/analysis/__pycache__/
+*.pyc

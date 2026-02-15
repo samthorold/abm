@@ -1,0 +1,31 @@
+# Baseline Validation Experiment
+# Validate baseline model against Owadally et al. (2018) paper findings
+
+[experiment]
+name = "baseline_validation"
+description = "Validate baseline model against paper - expect ~5.9 year cycles, loss ratio ≈ 1.0"
+num_runs = 30            # Monte Carlo runs for statistical robustness
+num_years = 100          # Long enough to see 15+ cycles
+warmup_years = 20        # Discard transient dynamics from analysis
+base_seed = 42           # Base random seed (each run uses base_seed + run_index)
+
+[model]
+# Baseline configuration from paper
+risk_loading_factor = 0.001
+underwriter_smoothing = 0.3     # β - CRITICAL: controls cycle stability
+distance_cost = 0.08            # γ - customer preference sensitivity
+credibility_factor = 0.2        # z - weight on own experience vs industry
+ewma_smoothing = 0.2            # w - EWMA decay for claim history
+claim_frequency = 1.0           # Bernoulli parameter (1.0 = certain)
+gamma_mean = 100.0              # μ - mean claim amount
+gamma_std = 10.0                # σ - std dev of claim amount
+num_insurers = 20               # N
+num_customers = 1000            # M
+initial_capital = 10000.0       # Starting capital per insurer
+leverage_ratio = 2.0            # Max premium = capital × leverage
+
+[output]
+save_market_timeseries = true
+save_insurer_snapshots = true
+save_summary_stats = true
+snapshot_interval = 5            # Sample insurer state every N years

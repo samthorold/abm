@@ -319,6 +319,7 @@ impl Agent<Event, Stats> for Insurer {
             current_market_price: self.current_market_price,
             current_markup: self.current_markup,
             num_customers: self.current_customers,
+            market_share: 0.0, // Will be calculated by MarketCoordinator
             ewma_claim: self.ewma_claim,
             price_history: self.price_history.clone(),
             quantity_history: self.quantity_history.clone(),

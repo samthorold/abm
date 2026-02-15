@@ -82,7 +82,40 @@ cargo run -p insurance_cycles
 
 Runs 100-year baseline simulation with β=0.3.
 
-### Parameter Sensitivity
+### Batch Experiments & Analysis
+
+**NEW**: Comprehensive experimental framework for parameter sweeps, Monte Carlo analysis, and statistical validation.
+
+See **[EXPERIMENTS.md](EXPERIMENTS.md)** for detailed documentation.
+
+#### Quick Start
+
+```bash
+# Run baseline validation (30 runs × 100 years)
+cargo run --release --bin run_experiment -- experiments/baseline_validation.toml
+
+# Analyze results with Python
+cd analysis
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+python cycle_analysis.py ../results/baseline_validation/
+```
+
+#### Available Experiments
+
+- `baseline_validation.toml` - Validate against paper (30 runs)
+- `beta_sensitivity.toml` - β sweep: [0.1, 1.0] (100 runs)
+- `credibility_sweep.toml` - z sweep: [0.0, 0.5] (50 runs)
+- `distance_cost_sweep.toml` - γ sweep: [0.02, 0.2] (50 runs)
+- `leverage_sensitivity.toml` - Leverage sweep: [1.5, 3.0] (50 runs)
+
+#### Outputs
+
+- **CSV files**: Market time series, insurer snapshots
+- **JSON summaries**: Cycle metrics, AR(2) coefficients, aggregate statistics
+- **Python analysis**: Cycle detection, spectral analysis, visualization
+
+### Parameter Sensitivity (Manual)
 
 Modify `main.rs` to test different configurations:
 
