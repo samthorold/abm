@@ -1,0 +1,26 @@
+{
+  "promptPermissions": {
+    "Bash": [
+      "git status",
+      "git diff",
+      "git log",
+      "git show",
+      "git branch",
+      "git ls-files",
+      "git rev-parse",
+      "git describe",
+      "git tag",
+      "gh pr view",
+      "gh pr list",
+      "gh pr status",
+      "gh pr checks",
+      "gh issue view",
+      "gh issue list",
+      "gh repo view",
+      "gh workflow view",
+      "gh run list",
+      "gh run view",
+      "gh api"
+    ]
+  }
+}
