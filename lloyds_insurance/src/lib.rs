@@ -251,6 +251,7 @@ pub struct SyndicateStats {
     pub loss_ratio: f64,
     pub profit: f64,
     pub is_insolvent: bool,
+    pub total_dividends_paid: f64,
 
     // Exposure
     pub exposure_by_peril_region: HashMap<usize, f64>,
@@ -272,6 +273,7 @@ impl SyndicateStats {
             loss_ratio: 0.0,
             profit: 0.0,
             is_insolvent: false,
+            total_dividends_paid: 0.0,
             exposure_by_peril_region: HashMap::new(),
             uniform_deviation: 0.0,
         }

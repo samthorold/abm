@@ -10,6 +10,10 @@ pub struct Syndicate {
     loss_history: Vec<f64>, // Tracks CLAIM AMOUNTS (when claims occur)
     premium_history: Vec<f64>,
     stats: SyndicateStats,
+
+    // Annual tracking for dividend calculation
+    annual_premiums: f64,
+    annual_claims: f64,
 }
 
 impl Syndicate {
@@ -23,6 +27,8 @@ impl Syndicate {
             loss_history: Vec::new(),
             premium_history: Vec::new(),
             stats: SyndicateStats::new(syndicate_id, initial_capital),
+            annual_premiums: 0.0,
+            annual_claims: 0.0,
         }
     }
 
@@ -102,6 +108,7 @@ impl Syndicate {
 
         self.capital += price;
         self.premium_history.push(price);
+        self.annual_premiums += price;
 
         let participation = PolicyParticipation {
             risk_id,
@@ -150,6 +157,7 @@ impl Syndicate {
 
         self.capital += price;
         self.premium_history.push(price);
+        self.annual_premiums += price;
 
         let participation = PolicyParticipation {
             risk_id,
@@ -168,6 +176,7 @@ impl Syndicate {
     fn handle_claim(&mut self, _risk_id: usize, amount: f64) -> Vec<(usize, Event)> {
         self.capital -= amount;
         self.loss_history.push(amount);
+        self.annual_claims += amount;
 
         self.stats.total_claims_paid += amount;
         self.stats.num_claims += 1;
@@ -184,6 +193,22 @@ impl Syndicate {
         } else {
             Vec::new()
         }
+    }
+
+    fn handle_year_end(&mut self) {
+        // Calculate annual profit: Pr_t = premiums - claims
+        let annual_profit = self.annual_premiums - self.annual_claims;
+
+        // Pay dividend only if there's positive profit: D = γ · Pr_t
+        if annual_profit > 0.0 {
+            let dividend = self.config.profit_fraction * annual_profit;
+            self.capital -= dividend;
+            self.stats.total_dividends_paid += dividend;
+        }
+
+        // Reset annual counters
+        self.annual_premiums = 0.0;
+        self.annual_claims = 0.0;
     }
 
     fn update_stats(&mut self) {
@@ -239,6 +264,11 @@ impl Agent<Event, Stats> for Syndicate {
                 Response::events(self.handle_claim(*risk_id, *amount))
             }
             Event::Month => {
+                self.update_stats();
+                Response::new()
+            }
+            Event::Year => {
+                self.handle_year_end();
                 self.update_stats();
                 Response::new()
             }
@@ -354,6 +384,109 @@ mod tests {
             "Should collect premium"
         );
         assert_eq!(syndicate.stats.num_policies, 1, "Should record policy");
+    }
+
+    #[test]
+    fn test_dividend_payment_on_profitable_year() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let initial_capital = syndicate.capital;
+
+        // Simulate a profitable year: collect premiums and pay fewer claims
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 600_000.0;
+
+        // Call year-end handler
+        syndicate.handle_year_end();
+
+        // Annual profit = 1M - 600k = 400k
+        // Dividend = 0.4 * 400k = 160k
+        let expected_dividend = 160_000.0;
+        let expected_capital = initial_capital - expected_dividend;
+
+        assert_eq!(
+            syndicate.stats.total_dividends_paid, expected_dividend,
+            "Dividend should be 40% of annual profit"
+        );
+        assert_eq!(
+            syndicate.capital, expected_capital,
+            "Capital should be reduced by dividend"
+        );
+        assert_eq!(
+            syndicate.annual_premiums, 0.0,
+            "Annual premiums should reset"
+        );
+        assert_eq!(syndicate.annual_claims, 0.0, "Annual claims should reset");
+    }
+
+    #[test]
+    fn test_no_dividend_on_loss() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let initial_capital = syndicate.capital;
+
+        // Simulate a loss year: claims exceed premiums
+        syndicate.annual_premiums = 600_000.0;
+        syndicate.annual_claims = 1_000_000.0;
+
+        // Call year-end handler
+        syndicate.handle_year_end();
+
+        // No dividend should be paid when there's a loss
+        assert_eq!(
+            syndicate.stats.total_dividends_paid, 0.0,
+            "No dividend should be paid on loss"
+        );
+        assert_eq!(
+            syndicate.capital, initial_capital,
+            "Capital should not change from dividend (only from claims)"
+        );
+    }
+
+    #[test]
+    fn test_dividend_accumulates_over_years() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Year 1: profit of 400k
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 600_000.0;
+        syndicate.handle_year_end();
+
+        let year1_dividend = 160_000.0; // 0.4 * 400k
+        assert_eq!(syndicate.stats.total_dividends_paid, year1_dividend);
+
+        // Year 2: profit of 200k
+        syndicate.annual_premiums = 800_000.0;
+        syndicate.annual_claims = 600_000.0;
+        syndicate.handle_year_end();
+
+        let year2_dividend = 80_000.0; // 0.4 * 200k
+        let total_dividends = year1_dividend + year2_dividend;
+
+        assert_eq!(
+            syndicate.stats.total_dividends_paid, total_dividends,
+            "Dividends should accumulate over years"
+        );
+    }
+
+    #[test]
+    fn test_year_event_triggers_dividend() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let initial_capital = syndicate.capital;
+
+        // Simulate activity
+        syndicate.annual_premiums = 500_000.0;
+        syndicate.annual_claims = 300_000.0;
+
+        // Send Year event
+        syndicate.act(365, &Event::Year);
+
+        // Should have paid dividend
+        let expected_dividend = 0.4 * (500_000.0 - 300_000.0); // 0.4 * 200k = 80k
+        assert_eq!(syndicate.stats.total_dividends_paid, expected_dividend);
+        assert_eq!(syndicate.capital, initial_capital - expected_dividend);
     }
 
     #[test]

@@ -106,6 +106,7 @@ fn main() {
         println!("  Policies: {}", s.num_policies);
         println!("  Premiums Collected: ${:.2}", s.total_premiums_collected);
         println!("  Claims Paid: ${:.2}", s.total_claims_paid);
+        println!("  Dividends Paid: ${:.2}", s.total_dividends_paid);
         println!("  Loss Ratio: {:.2}", s.loss_ratio);
         println!("  Profit: ${:.2}", s.profit);
         println!("  Insolvent: {}", s.is_insolvent);

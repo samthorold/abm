@@ -153,7 +153,13 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
    - Changed `scenario_1()` to explicitly set `mean_cat_events_per_year: 0.0`
    - Added tests: `test_scenario_1_has_no_catastrophes`, `test_scenario_2_has_catastrophes`, `test_scenarios_1_and_2_are_distinct`
    - Verified simulation output: 0 catastrophes, $0 catastrophe loss
-2. **Add dividend payments** on Year events — without this, capital dynamics are unrealistic
+2. ✅ **COMPLETED - Add dividend payments** on Year events — formula D = γ · Pr_t
+   - Added `annual_premiums` and `annual_claims` tracking to Syndicate
+   - Implemented `handle_year_end()`: calculates annual profit, pays dividend (40% of profit if positive), resets counters
+   - Added `Event::Year` handler in `act()` method
+   - Added `total_dividends_paid` to SyndicateStats
+   - Added 4 tests: profitable year, loss year, accumulation, event triggering
+   - Verified simulation output: syndicates paying dividends ($2.29M, $1.91M, etc.) making capital dynamics realistic
 3. **Populate TimeSeriesStats** from syndicate capital/premium/loss data on Month or Year events — this is where all validation evidence must come from
 4. **Consolidate brokers** into a single BrokerPool agent
 5. **Fold BrokerSyndicateNetwork** into Broker or CentralRiskRepository
