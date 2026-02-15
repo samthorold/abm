@@ -1,9 +1,9 @@
+use crate::{AttritionalLossGeneratorStats, Event, ModelConfig, Stats};
 use des::{Agent, Response};
 use rand::Rng;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
-use rand_distr::{Poisson, Gamma, Distribution};
-use crate::{Event, Stats, AttritionalLossGeneratorStats, ModelConfig};
+use rand::rngs::StdRng;
+use rand_distr::{Distribution, Gamma, Poisson};
 
 /// Generates attritional loss events for risks
 pub struct AttritionalLossGenerator {
@@ -21,7 +21,12 @@ impl AttritionalLossGenerator {
         }
     }
 
-    fn generate_losses_for_risk(&mut self, risk_id: usize, expiration_time: usize, current_t: usize) -> Vec<(usize, Event)> {
+    fn generate_losses_for_risk(
+        &mut self,
+        risk_id: usize,
+        expiration_time: usize,
+        current_t: usize,
+    ) -> Vec<(usize, Event)> {
         let mut events = Vec::new();
 
         // Generate number of claims according to Poisson distribution
@@ -61,7 +66,11 @@ impl Agent<Event, Stats> for AttritionalLossGenerator {
             Event::RiskBroadcasted { risk_id, .. } => {
                 // Assume 1 year expiration (365 days from now)
                 let expiration_time = current_t + 365;
-                Response::events(self.generate_losses_for_risk(*risk_id, expiration_time, current_t))
+                Response::events(self.generate_losses_for_risk(
+                    *risk_id,
+                    expiration_time,
+                    current_t,
+                ))
             }
             _ => Response::new(),
         }
@@ -85,12 +94,15 @@ mod tests {
         // Run multiple times to check it works
         let mut total_losses = 0;
         for i in 0..100 {
-            let resp = generator.act(0, &Event::RiskBroadcasted {
-                risk_id: i,
-                peril_region: 0,
-                limit: 10_000_000.0,
-                broker_id: 0,
-            });
+            let resp = generator.act(
+                0,
+                &Event::RiskBroadcasted {
+                    risk_id: i,
+                    peril_region: 0,
+                    limit: 10_000_000.0,
+                    broker_id: 0,
+                },
+            );
             total_losses += resp.events.len();
         }
 
@@ -108,12 +120,15 @@ mod tests {
         let mut count = 0;
 
         for i in 0..1000 {
-            let resp = generator.act(0, &Event::RiskBroadcasted {
-                risk_id: i,
-                peril_region: 0,
-                limit: 10_000_000.0,
-                broker_id: 0,
-            });
+            let resp = generator.act(
+                0,
+                &Event::RiskBroadcasted {
+                    risk_id: i,
+                    peril_region: 0,
+                    limit: 10_000_000.0,
+                    broker_id: 0,
+                },
+            );
 
             for (_, event) in resp.events {
                 if let Event::AttritionalLossOccurred { amount, .. } = event {

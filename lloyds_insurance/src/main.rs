@@ -1,8 +1,7 @@
 use des::EventLoop;
 use lloyds_insurance::{
-    Event, Stats, ModelConfig,
-    TimeGenerator, Broker, BrokerSyndicateNetwork, CentralRiskRepository,
-    AttritionalLossGenerator, CatastropheLossGenerator, Syndicate,
+    AttritionalLossGenerator, Broker, BrokerSyndicateNetwork, CatastropheLossGenerator,
+    CentralRiskRepository, Event, ModelConfig, Stats, Syndicate, TimeGenerator,
 };
 
 fn main() {
@@ -14,7 +13,10 @@ fn main() {
 
     println!("Configuration: Scenario 1 (Base Case - Attritional Only)");
     println!("  - Risks per day: {}", config.risks_per_day);
-    println!("  - Syndicate initial capital: ${:.0}", config.initial_capital);
+    println!(
+        "  - Syndicate initial capital: ${:.0}",
+        config.initial_capital
+    );
     println!("  - Simulation time: 50 years (18,250 days)\n");
 
     // Create initial events
@@ -37,16 +39,27 @@ fn main() {
     }
 
     // Add broker-syndicate network
-    agents.push(Box::new(BrokerSyndicateNetwork::new(config.clone(), 5, 54321)));
+    agents.push(Box::new(BrokerSyndicateNetwork::new(
+        config.clone(),
+        5,
+        54321,
+    )));
 
     // Add central risk repository
     agents.push(Box::new(CentralRiskRepository::new()));
 
     // Add attritional loss generator
-    agents.push(Box::new(AttritionalLossGenerator::new(config.clone(), 99999)));
+    agents.push(Box::new(AttritionalLossGenerator::new(
+        config.clone(),
+        99999,
+    )));
 
     // Add catastrophe loss generator
-    agents.push(Box::new(CatastropheLossGenerator::new(config.clone(), 50, 77777)));
+    agents.push(Box::new(CatastropheLossGenerator::new(
+        config.clone(),
+        50,
+        77777,
+    )));
 
     println!("Agents initialized:");
     println!("  - 1 Time Generator");
@@ -72,7 +85,8 @@ fn main() {
     let stats = event_loop.stats();
 
     // Filter syndicate stats
-    let syndicate_stats: Vec<_> = stats.iter()
+    let syndicate_stats: Vec<_> = stats
+        .iter()
         .filter_map(|s| match s {
             Stats::SyndicateStats(ss) => Some(ss),
             _ => None,
@@ -85,7 +99,10 @@ fn main() {
 
     for s in &syndicate_stats {
         println!("\nSyndicate {}:", s.syndicate_id);
-        println!("  Capital: ${:.2} (Initial: ${:.2})", s.capital, s.initial_capital);
+        println!(
+            "  Capital: ${:.2} (Initial: ${:.2})",
+            s.capital, s.initial_capital
+        );
         println!("  Policies: {}", s.num_policies);
         println!("  Premiums Collected: ${:.2}", s.total_premiums_collected);
         println!("  Claims Paid: ${:.2}", s.total_claims_paid);
@@ -95,7 +112,8 @@ fn main() {
     }
 
     // Filter broker stats
-    let broker_stats: Vec<_> = stats.iter()
+    let broker_stats: Vec<_> = stats
+        .iter()
         .filter_map(|s| match s {
             Stats::BrokerStats(bs) => Some(bs),
             _ => None,
@@ -111,7 +129,8 @@ fn main() {
     println!("  Total risks bound: {}", total_bound);
 
     // Repository stats
-    let repo_stats: Vec<_> = stats.iter()
+    let repo_stats: Vec<_> = stats
+        .iter()
         .filter_map(|s| match s {
             Stats::CentralRiskRepositoryStats(rs) => Some(rs),
             _ => None,
@@ -129,7 +148,8 @@ fn main() {
     }
 
     // Attritional loss generator stats
-    let loss_stats: Vec<_> = stats.iter()
+    let loss_stats: Vec<_> = stats
+        .iter()
         .filter_map(|s| match s {
             Stats::AttritionalLossGeneratorStats(ls) => Some(ls),
             _ => None,
@@ -143,12 +163,16 @@ fn main() {
         println!("  Total losses generated: {}", ls.total_losses_generated);
         println!("  Total loss amount: ${:.2}", ls.total_loss_amount);
         if ls.total_losses_generated > 0 {
-            println!("  Average loss: ${:.2}", ls.total_loss_amount / ls.total_losses_generated as f64);
+            println!(
+                "  Average loss: ${:.2}",
+                ls.total_loss_amount / ls.total_losses_generated as f64
+            );
         }
     }
 
     // Catastrophe loss generator stats
-    let cat_stats: Vec<_> = stats.iter()
+    let cat_stats: Vec<_> = stats
+        .iter()
         .filter_map(|s| match s {
             Stats::CatastropheLossGeneratorStats(cs) => Some(cs),
             _ => None,
@@ -160,9 +184,15 @@ fn main() {
         println!("Catastrophe Loss Summary:");
         println!("==============================================");
         println!("  Total catastrophes: {}", cs.total_catastrophes);
-        println!("  Total catastrophe loss: ${:.2}", cs.total_catastrophe_loss);
+        println!(
+            "  Total catastrophe loss: ${:.2}",
+            cs.total_catastrophe_loss
+        );
         if cs.total_catastrophes > 0 {
-            println!("  Average catastrophe loss: ${:.2}", cs.total_catastrophe_loss / cs.total_catastrophes as f64);
+            println!(
+                "  Average catastrophe loss: ${:.2}",
+                cs.total_catastrophe_loss / cs.total_catastrophes as f64
+            );
         }
         if !cs.catastrophes_by_region.is_empty() {
             println!("  Catastrophes by region:");

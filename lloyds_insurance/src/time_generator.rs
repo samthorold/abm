@@ -1,14 +1,15 @@
-use des::{Agent, Response};
 use crate::{Event, Stats};
+use des::{Agent, Response};
 
 /// Time generator that emits Day, Month, and Year events
+#[derive(Default)]
 pub struct TimeGenerator {
     current_day: usize,
 }
 
 impl TimeGenerator {
     pub fn new() -> Self {
-        Self { current_day: 0 }
+        Self::default()
     }
 }
 
@@ -20,12 +21,12 @@ impl Agent<Event, Stats> for TimeGenerator {
                 let mut events = vec![(current_t + 1, Event::Day)];
 
                 // Emit Month event every 30 days
-                if self.current_day % 30 == 0 {
+                if self.current_day.is_multiple_of(30) {
                     events.push((current_t, Event::Month));
                 }
 
                 // Emit Year event every 365 days
-                if self.current_day % 365 == 0 {
+                if self.current_day.is_multiple_of(365) {
                     events.push((current_t, Event::Year));
                 }
 

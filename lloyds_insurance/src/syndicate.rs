@@ -1,5 +1,5 @@
+use crate::{Event, ModelConfig, PolicyParticipation, Stats, SyndicateStats};
 use des::{Agent, Response};
-use crate::{Event, Stats, SyndicateStats, ModelConfig, PolicyParticipation};
 
 /// Simplified Syndicate agent (Phase 1: Basic actuarial pricing only)
 pub struct Syndicate {
@@ -7,7 +7,7 @@ pub struct Syndicate {
     config: ModelConfig,
     capital: f64,
     policies: Vec<PolicyParticipation>,
-    loss_history: Vec<f64>,  // Tracks CLAIM AMOUNTS (when claims occur)
+    loss_history: Vec<f64>, // Tracks CLAIM AMOUNTS (when claims occur)
     premium_history: Vec<f64>,
     stats: SyndicateStats,
 }
@@ -69,7 +69,11 @@ impl Syndicate {
         base_price + volatility_loading
     }
 
-    fn handle_lead_quote_request(&mut self, risk_id: usize, current_t: usize) -> Vec<(usize, Event)> {
+    fn handle_lead_quote_request(
+        &mut self,
+        risk_id: usize,
+        current_t: usize,
+    ) -> Vec<(usize, Event)> {
         // Use default industry average for now (will be updated with real stats later)
         let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
         let line_size = self.config.default_lead_line_size;
@@ -113,7 +117,12 @@ impl Syndicate {
         self.stats.total_line_size += line_size;
     }
 
-    fn handle_follow_quote_request(&mut self, risk_id: usize, _lead_price: f64, current_t: usize) -> Vec<(usize, Event)> {
+    fn handle_follow_quote_request(
+        &mut self,
+        risk_id: usize,
+        _lead_price: f64,
+        current_t: usize,
+    ) -> Vec<(usize, Event)> {
         // Followers accept the lead's price and offer their line size
         // (In this simplified version, we don't use lead_price for pricing decisions)
         let line_size = self.config.default_follow_line_size;
@@ -166,9 +175,12 @@ impl Syndicate {
         // Check for insolvency
         if self.capital <= 0.0 {
             self.stats.is_insolvent = true;
-            vec![(0, Event::SyndicateBankrupted {
-                syndicate_id: self.syndicate_id,
-            })]
+            vec![(
+                0,
+                Event::SyndicateBankrupted {
+                    syndicate_id: self.syndicate_id,
+                },
+            )]
         } else {
             Vec::new()
         }
@@ -191,21 +203,39 @@ impl Agent<Event, Stats> for Syndicate {
         }
 
         match data {
-            Event::LeadQuoteRequested { risk_id, syndicate_id } if *syndicate_id == self.syndicate_id => {
+            Event::LeadQuoteRequested {
+                risk_id,
+                syndicate_id,
+            } if *syndicate_id == self.syndicate_id => {
                 Response::events(self.handle_lead_quote_request(*risk_id, current_t))
             }
-            Event::LeadQuoteAccepted { risk_id, syndicate_id } if *syndicate_id == self.syndicate_id => {
+            Event::LeadQuoteAccepted {
+                risk_id,
+                syndicate_id,
+            } if *syndicate_id == self.syndicate_id => {
                 self.handle_lead_accepted(*risk_id);
                 Response::new()
             }
-            Event::FollowQuoteRequested { risk_id, syndicate_id, lead_price } if *syndicate_id == self.syndicate_id => {
+            Event::FollowQuoteRequested {
+                risk_id,
+                syndicate_id,
+                lead_price,
+            } if *syndicate_id == self.syndicate_id => {
                 Response::events(self.handle_follow_quote_request(*risk_id, *lead_price, current_t))
             }
-            Event::FollowQuoteAccepted { risk_id, syndicate_id, line_size } if *syndicate_id == self.syndicate_id => {
+            Event::FollowQuoteAccepted {
+                risk_id,
+                syndicate_id,
+                line_size,
+            } if *syndicate_id == self.syndicate_id => {
                 self.handle_follow_accepted(*risk_id, *line_size);
                 Response::new()
             }
-            Event::ClaimReceived { risk_id, syndicate_id, amount } if *syndicate_id == self.syndicate_id => {
+            Event::ClaimReceived {
+                risk_id,
+                syndicate_id,
+                amount,
+            } if *syndicate_id == self.syndicate_id => {
                 Response::events(self.handle_claim(*risk_id, *amount))
             }
             Event::Month => {
@@ -278,16 +308,26 @@ mod tests {
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config.clone());
 
-        let resp = syndicate.act(0, &Event::FollowQuoteRequested {
-            risk_id: 1,
-            syndicate_id: 0,
-            lead_price: 150_000.0,
-        });
+        let resp = syndicate.act(
+            0,
+            &Event::FollowQuoteRequested {
+                risk_id: 1,
+                syndicate_id: 0,
+                lead_price: 150_000.0,
+            },
+        );
 
         // Should generate a FollowQuoteOffered event
         assert_eq!(resp.events.len(), 1);
         assert!(
-            matches!(resp.events[0].1, Event::FollowQuoteOffered { risk_id: 1, syndicate_id: 0, .. }),
+            matches!(
+                resp.events[0].1,
+                Event::FollowQuoteOffered {
+                    risk_id: 1,
+                    syndicate_id: 0,
+                    ..
+                }
+            ),
             "Syndicate should offer a follow quote when requested"
         );
     }
@@ -299,14 +339,20 @@ mod tests {
         let mut syndicate = Syndicate::new(0, config.clone());
         let initial_capital = syndicate.capital;
 
-        syndicate.act(0, &Event::FollowQuoteAccepted {
-            risk_id: 1,
-            syndicate_id: 0,
-            line_size: 0.1,
-        });
+        syndicate.act(
+            0,
+            &Event::FollowQuoteAccepted {
+                risk_id: 1,
+                syndicate_id: 0,
+                line_size: 0.1,
+            },
+        );
 
         // Should collect premium and record policy
-        assert!(syndicate.capital > initial_capital, "Should collect premium");
+        assert!(
+            syndicate.capital > initial_capital,
+            "Should collect premium"
+        );
         assert_eq!(syndicate.stats.num_policies, 1, "Should record policy");
     }
 

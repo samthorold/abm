@@ -1,10 +1,10 @@
+use crate::{BrokerStats, Event, ModelConfig, Stats};
 use des::{Agent, Response};
 use rand::Rng;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
-use rand_distr::{Poisson, Distribution};
+use rand::rngs::StdRng;
+use rand_distr::{Distribution, Poisson};
 use std::collections::HashSet;
-use crate::{Event, Stats, BrokerStats, ModelConfig};
 
 /// Broker agent that generates new risks and manages quote deadlines
 pub struct Broker {
@@ -12,7 +12,7 @@ pub struct Broker {
     config: ModelConfig,
     rng: StdRng,
     next_risk_id: usize,
-    our_risks: HashSet<usize>,  // Track which risks this broker generated
+    our_risks: HashSet<usize>, // Track which risks this broker generated
     stats: BrokerStats,
 }
 
@@ -68,10 +68,7 @@ impl Broker {
             ));
 
             // Lead quote selection: 2 days
-            events.push((
-                current_t + 2,
-                Event::LeadQuoteSelectionDeadline { risk_id },
-            ));
+            events.push((current_t + 2, Event::LeadQuoteSelectionDeadline { risk_id }));
 
             // Follow quote consolidation: 3 days
             events.push((
@@ -122,7 +119,9 @@ mod tests {
         let mut total_risks = 0;
         for _ in 0..100 {
             let resp = broker.act(0, &Event::Day);
-            let risk_broadcasts = resp.events.iter()
+            let risk_broadcasts = resp
+                .events
+                .iter()
                 .filter(|(_, e)| matches!(e, Event::RiskBroadcasted { .. }))
                 .count();
             total_risks += risk_broadcasts;
@@ -142,16 +141,28 @@ mod tests {
 
         if !resp.events.is_empty() {
             // Check that deadlines are set for each risk
-            let has_lead_consolidation = resp.events.iter()
+            let has_lead_consolidation = resp
+                .events
+                .iter()
                 .any(|(_, e)| matches!(e, Event::LeadQuoteConsolidationDeadline { .. }));
-            let has_lead_selection = resp.events.iter()
+            let has_lead_selection = resp
+                .events
+                .iter()
                 .any(|(_, e)| matches!(e, Event::LeadQuoteSelectionDeadline { .. }));
-            let has_follow_consolidation = resp.events.iter()
+            let has_follow_consolidation = resp
+                .events
+                .iter()
                 .any(|(_, e)| matches!(e, Event::FollowQuoteConsolidationDeadline { .. }));
-            let has_follow_selection = resp.events.iter()
+            let has_follow_selection = resp
+                .events
+                .iter()
                 .any(|(_, e)| matches!(e, Event::FollowQuoteSelectionDeadline { .. }));
 
-            if resp.events.iter().any(|(_, e)| matches!(e, Event::RiskBroadcasted { .. })) {
+            if resp
+                .events
+                .iter()
+                .any(|(_, e)| matches!(e, Event::RiskBroadcasted { .. }))
+            {
                 assert!(has_lead_consolidation);
                 assert!(has_lead_selection);
                 assert!(has_follow_consolidation);
@@ -184,10 +195,13 @@ mod tests {
         assert_eq!(broker.stats.risks_bound, 0); // Not bound yet
 
         // Simulate the risk being accepted
-        broker.act(0, &Event::LeadQuoteAccepted {
-            risk_id,
-            syndicate_id: 0,
-        });
+        broker.act(
+            0,
+            &Event::LeadQuoteAccepted {
+                risk_id,
+                syndicate_id: 0,
+            },
+        );
 
         // Should now show as bound
         assert_eq!(

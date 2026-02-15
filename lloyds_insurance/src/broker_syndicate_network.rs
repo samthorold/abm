@@ -1,8 +1,8 @@
+use crate::{BrokerStats, Event, ModelConfig, Stats};
 use des::{Agent, Response};
 use rand::Rng;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
-use crate::{Event, Stats, BrokerStats, ModelConfig};
+use rand::rngs::StdRng;
 
 /// Broker-Syndicate Network that connects risks to syndicates for quoting
 pub struct BrokerSyndicateNetwork {
@@ -30,10 +30,17 @@ impl BrokerSyndicateNetwork {
             syndicates.swap(i, j);
         }
 
-        syndicates.into_iter().take(self.config.lead_top_k).collect()
+        syndicates
+            .into_iter()
+            .take(self.config.lead_top_k)
+            .collect()
     }
 
-    fn select_syndicates_for_follow(&mut self, _risk_id: usize, _lead_syndicate: usize) -> Vec<usize> {
+    fn select_syndicates_for_follow(
+        &mut self,
+        _risk_id: usize,
+        _lead_syndicate: usize,
+    ) -> Vec<usize> {
         // Random topology: randomly select top_k syndicates for follow quotes
         // Exclude the lead syndicate
         let mut syndicates: Vec<usize> = (0..self.num_syndicates).collect();
@@ -44,7 +51,10 @@ impl BrokerSyndicateNetwork {
             syndicates.swap(i, j);
         }
 
-        syndicates.into_iter().take(self.config.follow_top_k).collect()
+        syndicates
+            .into_iter()
+            .take(self.config.follow_top_k)
+            .collect()
     }
 }
 
@@ -68,7 +78,10 @@ impl Agent<Event, Stats> for BrokerSyndicateNetwork {
 
                 Response::events(events)
             }
-            Event::LeadQuoteAccepted { risk_id, syndicate_id } => {
+            Event::LeadQuoteAccepted {
+                risk_id,
+                syndicate_id,
+            } => {
                 // Once lead is selected, request follow quotes
                 let mut events = Vec::new();
 
@@ -117,15 +130,22 @@ mod tests {
         let config = ModelConfig::default();
         let mut network = BrokerSyndicateNetwork::new(config, 5, 12345);
 
-        let resp = network.act(0, &Event::RiskBroadcasted {
-            risk_id: 1,
-            peril_region: 0,
-            limit: 10_000_000.0,
-            broker_id: 0,
-        });
+        let resp = network.act(
+            0,
+            &Event::RiskBroadcasted {
+                risk_id: 1,
+                peril_region: 0,
+                limit: 10_000_000.0,
+                broker_id: 0,
+            },
+        );
 
         // Should emit LeadQuoteRequested events
         assert!(!resp.events.is_empty());
-        assert!(resp.events.iter().all(|(_, e)| matches!(e, Event::LeadQuoteRequested { .. })));
+        assert!(
+            resp.events
+                .iter()
+                .all(|(_, e)| matches!(e, Event::LeadQuoteRequested { .. }))
+        );
     }
 }

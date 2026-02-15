@@ -4,21 +4,21 @@ use std::collections::HashMap;
 // Modules
 // ============================================================================
 
-pub mod time_generator;
+pub mod attritional_loss_generator;
 pub mod broker;
 pub mod broker_syndicate_network;
-pub mod central_risk_repository;
-pub mod attritional_loss_generator;
 pub mod catastrophe_loss_generator;
+pub mod central_risk_repository;
 pub mod syndicate;
+pub mod time_generator;
 
-pub use time_generator::TimeGenerator;
+pub use attritional_loss_generator::AttritionalLossGenerator;
 pub use broker::Broker;
 pub use broker_syndicate_network::BrokerSyndicateNetwork;
-pub use central_risk_repository::CentralRiskRepository;
-pub use attritional_loss_generator::AttritionalLossGenerator;
 pub use catastrophe_loss_generator::CatastropheLossGenerator;
+pub use central_risk_repository::CentralRiskRepository;
 pub use syndicate::Syndicate;
+pub use time_generator::TimeGenerator;
 
 // ============================================================================
 // Events
@@ -191,16 +191,14 @@ pub enum Stats {
     TimeSeriesStats(TimeSeriesStats),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TimeSeriesStats {
     pub snapshots: Vec<MarketSnapshot>,
 }
 
 impl TimeSeriesStats {
     pub fn new() -> Self {
-        Self {
-            snapshots: Vec::new(),
-        }
+        Self::default()
     }
 }
 
@@ -290,7 +288,7 @@ impl SyndicateStats {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CentralRiskRepositoryStats {
     pub total_risks: usize,
     pub total_policies: usize,
@@ -300,16 +298,11 @@ pub struct CentralRiskRepositoryStats {
 
 impl CentralRiskRepositoryStats {
     pub fn new() -> Self {
-        Self {
-            total_risks: 0,
-            total_policies: 0,
-            total_lead_quotes: 0,
-            total_follow_quotes: 0,
-        }
+        Self::default()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AttritionalLossGeneratorStats {
     pub total_losses_generated: usize,
     pub total_loss_amount: f64,
@@ -317,14 +310,11 @@ pub struct AttritionalLossGeneratorStats {
 
 impl AttritionalLossGeneratorStats {
     pub fn new() -> Self {
-        Self {
-            total_losses_generated: 0,
-            total_loss_amount: 0.0,
-        }
+        Self::default()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CatastropheLossGeneratorStats {
     pub total_catastrophes: usize,
     pub total_catastrophe_loss: f64,
@@ -333,11 +323,7 @@ pub struct CatastropheLossGeneratorStats {
 
 impl CatastropheLossGeneratorStats {
     pub fn new() -> Self {
-        Self {
-            total_catastrophes: 0,
-            total_catastrophe_loss: 0.0,
-            catastrophes_by_region: HashMap::new(),
-        }
+        Self::default()
     }
 }
 
@@ -527,17 +513,16 @@ mod tests {
 
         let config = ModelConfig::scenario_1();
         let events = vec![(0, Event::Day)];
-        let mut agents: Vec<Box<dyn des::Agent<Event, Stats>>> = Vec::new();
-
-        // Smaller simulation for faster testing
-        agents.push(Box::new(TimeGenerator::new()));
-        agents.push(Box::new(Syndicate::new(0, config.clone())));
-        agents.push(Box::new(Syndicate::new(1, config.clone())));
-        agents.push(Box::new(Broker::new(0, config.clone(), 12345)));
-        agents.push(Box::new(Broker::new(1, config.clone(), 23456)));
-        agents.push(Box::new(BrokerSyndicateNetwork::new(config.clone(), 2, 54321)));
-        agents.push(Box::new(CentralRiskRepository::new()));
-        agents.push(Box::new(AttritionalLossGenerator::new(config.clone(), 99999)));
+        let agents: Vec<Box<dyn des::Agent<Event, Stats>>> = vec![
+            Box::new(TimeGenerator::new()),
+            Box::new(Syndicate::new(0, config.clone())),
+            Box::new(Syndicate::new(1, config.clone())),
+            Box::new(Broker::new(0, config.clone(), 12345)),
+            Box::new(Broker::new(1, config.clone(), 23456)),
+            Box::new(BrokerSyndicateNetwork::new(config.clone(), 2, 54321)),
+            Box::new(CentralRiskRepository::new()),
+            Box::new(AttritionalLossGenerator::new(config.clone(), 99999)),
+        ];
 
         let mut event_loop = EventLoop::new(events, agents);
 
@@ -545,7 +530,8 @@ mod tests {
         event_loop.run(365 * 10);
 
         let stats = event_loop.stats();
-        let syndicate_stats: Vec<_> = stats.iter()
+        let syndicate_stats: Vec<_> = stats
+            .iter()
             .filter_map(|s| match s {
                 Stats::SyndicateStats(ss) => Some(ss),
                 _ => None,
@@ -553,15 +539,21 @@ mod tests {
             .collect();
 
         // Calculate average loss ratio
-        let avg_loss_ratio: f64 = syndicate_stats.iter()
+        let avg_loss_ratio: f64 = syndicate_stats
+            .iter()
             .filter(|s| s.total_premiums_collected > 0.0)
             .map(|s| s.loss_ratio)
-            .sum::<f64>() / syndicate_stats.len() as f64;
+            .sum::<f64>()
+            / syndicate_stats.len() as f64;
 
         // Loss ratio should be reasonably close to 1.0, allowing for variance
         // With gamma CoV=1.0 and limited time (10 years), we expect significant variance
         // Acceptable range: 0.5 to 1.8 (captures ~95% of reasonable outcomes)
-        let inflation_factor = if avg_loss_ratio < 1.0 { 1.0 / avg_loss_ratio } else { avg_loss_ratio };
+        let inflation_factor = if avg_loss_ratio < 1.0 {
+            1.0 / avg_loss_ratio
+        } else {
+            avg_loss_ratio
+        };
         let direction = if avg_loss_ratio < 1.0 { "high" } else { "low" };
 
         assert!(

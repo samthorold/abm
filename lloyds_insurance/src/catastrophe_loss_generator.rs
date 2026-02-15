@@ -1,14 +1,13 @@
+use crate::{CatastropheLossGeneratorStats, Event, ModelConfig, Stats};
 use des::{Agent, Response};
 use rand::Rng;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand_distr::{Distribution, Poisson};
-use crate::{Event, Stats, CatastropheLossGeneratorStats, ModelConfig};
 
 /// Generates catastrophe events using Poisson distribution for frequency
 /// and Pareto distribution for severity
 pub struct CatastropheLossGenerator {
-    config: ModelConfig,
     scheduled_catastrophes: Vec<ScheduledCatastrophe>,
     stats: CatastropheLossGeneratorStats,
 }
@@ -26,15 +25,10 @@ impl CatastropheLossGenerator {
         let mut stats = CatastropheLossGeneratorStats::new();
 
         // Pre-generate catastrophe events
-        let scheduled_catastrophes = Self::generate_catastrophes(
-            &config,
-            sim_years,
-            &mut rng,
-            &mut stats,
-        );
+        let scheduled_catastrophes =
+            Self::generate_catastrophes(&config, sim_years, &mut rng, &mut stats);
 
         Self {
-            config,
             scheduled_catastrophes,
             stats,
         }
@@ -74,7 +68,10 @@ impl CatastropheLossGenerator {
             // TODO: Implement truncated Pareto properly
             let total_loss = Self::sample_pareto_loss(config, rng);
 
-            *stats.catastrophes_by_region.entry(peril_region).or_insert(0) += 1;
+            *stats
+                .catastrophes_by_region
+                .entry(peril_region)
+                .or_insert(0) += 1;
             stats.total_catastrophe_loss += total_loss;
 
             catastrophes.push(ScheduledCatastrophe {
@@ -153,8 +150,10 @@ mod tests {
     #[test]
     fn test_generates_catastrophes() {
         // RED: This test should initially guide implementation
-        let mut config = ModelConfig::default();
-        config.mean_cat_events_per_year = 0.05; // ~2.5 events over 50 years
+        let config = ModelConfig {
+            mean_cat_events_per_year: 0.05, // ~2.5 events over 50 years
+            ..Default::default()
+        };
 
         let generator = CatastropheLossGenerator::new(config.clone(), 50, 12345);
 
@@ -175,8 +174,10 @@ mod tests {
 
     #[test]
     fn test_catastrophe_timing() {
-        let mut config = ModelConfig::default();
-        config.mean_cat_events_per_year = 1.0; // High rate for testing
+        let config = ModelConfig {
+            mean_cat_events_per_year: 1.0, // High rate for testing
+            ..Default::default()
+        };
 
         let mut generator = CatastropheLossGenerator::new(config.clone(), 10, 54321);
 
@@ -206,8 +207,8 @@ mod tests {
         let generator = CatastropheLossGenerator::new(config.clone(), 50, 99999);
 
         if generator.stats.total_catastrophes > 0 {
-            let avg_loss = generator.stats.total_catastrophe_loss /
-                          generator.stats.total_catastrophes as f64;
+            let avg_loss =
+                generator.stats.total_catastrophe_loss / generator.stats.total_catastrophes as f64;
 
             let min_expected = config.risk_limit * config.min_cat_damage_fraction;
 
@@ -215,15 +216,18 @@ mod tests {
             assert!(
                 avg_loss >= min_expected,
                 "Average catastrophe loss ${:.0} should be >= minimum ${:.0}",
-                avg_loss, min_expected
+                avg_loss,
+                min_expected
             );
         }
     }
 
     #[test]
     fn test_no_catastrophes_with_zero_rate() {
-        let mut config = ModelConfig::default();
-        config.mean_cat_events_per_year = 0.0;
+        let config = ModelConfig {
+            mean_cat_events_per_year: 0.0,
+            ..Default::default()
+        };
 
         let generator = CatastropheLossGenerator::new(config, 50, 11111);
 

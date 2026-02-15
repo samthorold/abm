@@ -1,25 +1,20 @@
+use crate::{CentralRiskRepositoryStats, Event, Policy, Quote, Risk, Stats};
 use des::{Agent, Response};
 use std::collections::HashMap;
-use crate::{Event, Stats, CentralRiskRepositoryStats, Risk, Quote, Policy};
 
 /// Central repository that tracks all risks, quotes, and policies
+#[derive(Default)]
 pub struct CentralRiskRepository {
     risks: HashMap<usize, Risk>,
     lead_quotes: HashMap<usize, Vec<Quote>>, // risk_id -> quotes
     follow_quotes: HashMap<usize, Vec<Quote>>, // risk_id -> quotes
-    policies: HashMap<usize, Policy>, // risk_id -> policy
+    policies: HashMap<usize, Policy>,        // risk_id -> policy
     stats: CentralRiskRepositoryStats,
 }
 
 impl CentralRiskRepository {
     pub fn new() -> Self {
-        Self {
-            risks: HashMap::new(),
-            lead_quotes: HashMap::new(),
-            follow_quotes: HashMap::new(),
-            policies: HashMap::new(),
-            stats: CentralRiskRepositoryStats::new(),
-        }
+        Self::default()
     }
 
     fn register_risk(&mut self, risk_id: usize, peril_region: usize, limit: f64, broker_id: usize) {
@@ -34,13 +29,19 @@ impl CentralRiskRepository {
         self.stats.total_risks += 1;
     }
 
-    fn register_lead_quote(&mut self, risk_id: usize, syndicate_id: usize, price: f64, line_size: f64) {
+    fn register_lead_quote(
+        &mut self,
+        risk_id: usize,
+        syndicate_id: usize,
+        price: f64,
+        line_size: f64,
+    ) {
         let quote = Quote {
             syndicate_id,
             price,
             line_size,
         };
-        self.lead_quotes.entry(risk_id).or_insert_with(Vec::new).push(quote);
+        self.lead_quotes.entry(risk_id).or_default().push(quote);
         self.stats.total_lead_quotes += 1;
     }
 
@@ -50,40 +51,41 @@ impl CentralRiskRepository {
             price: 0.0, // Followers accept lead price
             line_size,
         };
-        self.follow_quotes.entry(risk_id).or_insert_with(Vec::new).push(quote);
+        self.follow_quotes.entry(risk_id).or_default().push(quote);
         self.stats.total_follow_quotes += 1;
     }
 
     fn select_lead(&mut self, risk_id: usize, current_t: usize) -> Vec<(usize, Event)> {
         let mut events = Vec::new();
 
-        if let Some(quotes) = self.lead_quotes.get(&risk_id) {
-            if !quotes.is_empty() {
-                // Select cheapest quote
-                let best_quote = quotes.iter()
-                    .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
-                    .unwrap();
+        if let Some(quotes) = self.lead_quotes.get(&risk_id)
+            && !quotes.is_empty()
+        {
+            // Select cheapest quote
+            let best_quote = quotes
+                .iter()
+                .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
+                .unwrap();
 
-                // Notify winning syndicate
-                events.push((
-                    current_t,
-                    Event::LeadQuoteAccepted {
-                        risk_id,
-                        syndicate_id: best_quote.syndicate_id,
-                    },
-                ));
-
-                // Create policy (will be completed with followers later)
-                let policy = Policy {
+            // Notify winning syndicate
+            events.push((
+                current_t,
+                Event::LeadQuoteAccepted {
                     risk_id,
-                    lead_syndicate_id: best_quote.syndicate_id,
-                    lead_price: best_quote.price,
-                    lead_line_size: best_quote.line_size,
-                    followers: Vec::new(),
-                };
-                self.policies.insert(risk_id, policy);
-                self.stats.total_policies += 1;
-            }
+                    syndicate_id: best_quote.syndicate_id,
+                },
+            ));
+
+            // Create policy (will be completed with followers later)
+            let policy = Policy {
+                risk_id,
+                lead_syndicate_id: best_quote.syndicate_id,
+                lead_price: best_quote.price,
+                lead_line_size: best_quote.line_size,
+                followers: Vec::new(),
+            };
+            self.policies.insert(risk_id, policy);
+            self.stats.total_policies += 1;
         }
 
         events
@@ -130,7 +132,12 @@ impl CentralRiskRepository {
         events
     }
 
-    fn apply_attritional_loss(&self, risk_id: usize, amount: f64, current_t: usize) -> Vec<(usize, Event)> {
+    fn apply_attritional_loss(
+        &self,
+        risk_id: usize,
+        amount: f64,
+        current_t: usize,
+    ) -> Vec<(usize, Event)> {
         let mut events = Vec::new();
 
         if let Some(policy) = self.policies.get(&risk_id) {
@@ -162,11 +169,18 @@ impl CentralRiskRepository {
         events
     }
 
-    fn apply_catastrophe_loss(&self, peril_region: usize, total_loss: f64, current_t: usize) -> Vec<(usize, Event)> {
+    fn apply_catastrophe_loss(
+        &self,
+        peril_region: usize,
+        total_loss: f64,
+        current_t: usize,
+    ) -> Vec<(usize, Event)> {
         let mut events = Vec::new();
 
         // Find all risks in the affected peril region
-        let affected_risks: Vec<usize> = self.risks.iter()
+        let affected_risks: Vec<usize> = self
+            .risks
+            .iter()
             .filter(|(_, risk)| risk.peril_region == peril_region)
             .map(|(id, _)| *id)
             .collect();
@@ -213,15 +227,29 @@ impl CentralRiskRepository {
 impl Agent<Event, Stats> for CentralRiskRepository {
     fn act(&mut self, current_t: usize, data: &Event) -> Response<Event, Stats> {
         match data {
-            Event::RiskBroadcasted { risk_id, peril_region, limit, broker_id } => {
+            Event::RiskBroadcasted {
+                risk_id,
+                peril_region,
+                limit,
+                broker_id,
+            } => {
                 self.register_risk(*risk_id, *peril_region, *limit, *broker_id);
                 Response::new()
             }
-            Event::LeadQuoteOffered { risk_id, syndicate_id, price, line_size } => {
+            Event::LeadQuoteOffered {
+                risk_id,
+                syndicate_id,
+                price,
+                line_size,
+            } => {
                 self.register_lead_quote(*risk_id, *syndicate_id, *price, *line_size);
                 Response::new()
             }
-            Event::FollowQuoteOffered { risk_id, syndicate_id, line_size } => {
+            Event::FollowQuoteOffered {
+                risk_id,
+                syndicate_id,
+                line_size,
+            } => {
                 self.register_follow_quote(*risk_id, *syndicate_id, *line_size);
                 Response::new()
             }
@@ -234,7 +262,10 @@ impl Agent<Event, Stats> for CentralRiskRepository {
             Event::AttritionalLossOccurred { risk_id, amount } => {
                 Response::events(self.apply_attritional_loss(*risk_id, *amount, current_t))
             }
-            Event::CatastropheLossOccurred { peril_region, total_loss } => {
+            Event::CatastropheLossOccurred {
+                peril_region,
+                total_loss,
+            } => {
                 Response::events(self.apply_catastrophe_loss(*peril_region, *total_loss, current_t))
             }
             _ => Response::new(),
