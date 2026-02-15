@@ -34,7 +34,7 @@ struct SyndicateReport {
     is_insolvent: bool,
     annual_premiums: f64,
     annual_claims: f64,
-    num_policies: usize,
+    num_policies: usize, // Annual policies written (not cumulative)
 }
 
 impl MarketStatisticsCollector {
@@ -102,11 +102,12 @@ impl MarketStatisticsCollector {
             .map(|r| r.annual_premiums)
             .sum();
         let total_annual_claims: f64 = self.pending_reports.values().map(|r| r.annual_claims).sum();
-        let total_policies: usize = self.pending_reports.values().map(|r| r.num_policies).sum();
+        let total_annual_policies: usize =
+            self.pending_reports.values().map(|r| r.num_policies).sum();
 
-        // Average premium per policy (market-wide)
-        let avg_premium = if total_policies > 0 {
-            total_annual_premiums / total_policies as f64
+        // Average premium per policy (market-wide) for this year
+        let avg_premium = if total_annual_policies > 0 {
+            total_annual_premiums / total_annual_policies as f64
         } else {
             0.0
         };
@@ -126,7 +127,7 @@ impl MarketStatisticsCollector {
             num_solvent_syndicates: num_solvent,
             num_insolvent_syndicates: num_insolvent,
             total_capital,
-            total_policies,
+            total_policies: total_annual_policies,
         };
 
         self.time_series.snapshots.push(snapshot);

@@ -676,10 +676,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // KNOWN BUG: avg_premium calculation in MarketStatisticsCollector is broken
-    // avg_premium = annual_premiums / num_policies, but num_policies is CUMULATIVE
-    // while annual_premiums is annual-only. Need to track annual_policies_written.
-    // See market_statistics_collector.rs:108-112
     fn test_premium_convergence_to_fair_price() {
         // Experiment 2: Premium Convergence to Fair Price (Scenario 1)
         //

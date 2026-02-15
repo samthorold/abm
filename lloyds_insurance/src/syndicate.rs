@@ -11,9 +11,10 @@ pub struct Syndicate {
     premium_history: Vec<f64>,
     stats: SyndicateStats,
 
-    // Annual tracking for dividend calculation
+    // Annual tracking for dividend calculation and reporting
     annual_premiums: f64,
     annual_claims: f64,
+    annual_policies_written: usize,
 
     // Underwriting markup: exponentially weighted moving average of market conditions
     // m_t captures competitive pressure based on loss experience
@@ -33,6 +34,7 @@ impl Syndicate {
             stats: SyndicateStats::new(syndicate_id, initial_capital),
             annual_premiums: 0.0,
             annual_claims: 0.0,
+            annual_policies_written: 0,
             markup_m_t: 0.0, // Start at 0 (no markup, e^0 = 1)
         }
     }
@@ -126,6 +128,7 @@ impl Syndicate {
         self.capital += price;
         self.premium_history.push(price);
         self.annual_premiums += price;
+        self.annual_policies_written += 1;
 
         let participation = PolicyParticipation {
             risk_id,
@@ -176,6 +179,7 @@ impl Syndicate {
         self.capital += price;
         self.premium_history.push(price);
         self.annual_premiums += price;
+        self.annual_policies_written += 1;
 
         let participation = PolicyParticipation {
             risk_id,
@@ -218,10 +222,11 @@ impl Syndicate {
         // Even insolvent syndicates update their market view (though they won't quote)
         self.update_underwriting_markup();
 
-        // Insolvent syndicates don't pay dividends
+        // Insolvent syndicates don't pay dividends and reset annual counters
         if self.stats.is_insolvent {
             self.annual_premiums = 0.0;
             self.annual_claims = 0.0;
+            self.annual_policies_written = 0;
             return;
         }
 
@@ -241,6 +246,7 @@ impl Syndicate {
         // Reset annual counters
         self.annual_premiums = 0.0;
         self.annual_claims = 0.0;
+        self.annual_policies_written = 0;
     }
 
     fn update_underwriting_markup(&mut self) {
@@ -289,6 +295,7 @@ impl Agent<Event, Stats> for Syndicate {
             // Capture annual metrics BEFORE handle_year_end() resets them
             let annual_premiums = self.annual_premiums;
             let annual_claims = self.annual_claims;
+            let annual_policies_written = self.annual_policies_written;
 
             self.handle_year_end();
             self.update_stats();
@@ -301,7 +308,7 @@ impl Agent<Event, Stats> for Syndicate {
                     capital: self.capital,
                     annual_premiums,
                     annual_claims,
-                    num_policies: self.stats.num_policies,
+                    num_policies: annual_policies_written,
                 },
             )]);
         }
