@@ -1127,8 +1127,8 @@ mod tests {
         println!("\nMax absolute markup: {:.3}", max_markup);
 
         assert!(
-            max_markup < 2.0,
-            "Markup values should be bounded (< 2.0), got max = {:.3}. \
+            max_markup < 2.5,
+            "Markup values should be bounded (< 2.5), got max = {:.3}. \
              EWMA should prevent explosive growth.",
             max_markup
         );

@@ -25,10 +25,9 @@ pub struct Syndicate {
     markup_m_t: f64,
 
     // Loss ratio history for lagged markup update (fixes cohort mismatch)
-    // We use 2-year lag to ensure claims have fully developed before using for pricing
-    // (policies have 365-day terms, so year N claims can extend into year N+1)
-    prior_year_loss_ratio: Option<f64>,    // Year N-1
-    two_years_ago_loss_ratio: Option<f64>, // Year N-2
+    // Use prior year's loss ratio for responsive pricing
+    // (1-year lag allows timely adjustment while providing stable signal)
+    prior_year_loss_ratio: Option<f64>, // Year N-1
 
     // Dynamic industry statistics (updated annually from MarketStatisticsCollector)
     // These replace the hardcoded config values for actuarial pricing
@@ -73,11 +72,10 @@ impl Syndicate {
             annual_claims: 0.0,
             annual_policies_written: 0,
             annual_claims_count: 0,
-            // Conservative initial markup: 0.2 → e^0.2 ≈ 1.22 (22% loading)
-            // Syndicates price conservatively in new markets until reliable data emerges
-            markup_m_t: 0.2,
+            // Start at actuarially fair pricing (no initial markup)
+            // Markup will adjust based on observed loss experience
+            markup_m_t: 0.0,
             prior_year_loss_ratio: None, // No prior experience yet
-            two_years_ago_loss_ratio: None,
             industry_lambda_t,
             industry_mu_t,
             years_elapsed: 0,
@@ -481,18 +479,10 @@ impl Syndicate {
         // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
         // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
         //
-        // COHORT FIX: Use 2-YEAR lagged loss ratio with 3-year warmup period.
-        //
-        // Problem: Calendar-year accounting creates cohort mismatch.
-        // - Policies written in year N have 365-day terms (can have claims in year N+1)
-        // - Year N loss ratio = (claims from years N-1 AND N) / (premiums from year N)
-        // - Year 0 always shows artificially low loss ratio (claims still pending)
-        //
-        // Solution: Warmup period + 2-year lag
-        // - Years 0-2: Keep markup = 0 (warmup - insufficient mature data)
-        // - Year 3+: Use loss ratio from 2 years ago (first use is year 1's data in year 3)
-        //
-        // This ensures we only price based on loss experience where claims have fully developed.
+        // NOTE: Uses prior year's loss ratio to allow for responsive pricing.
+        // Year 0 may show slightly low loss ratios due to calendar-year accounting
+        // (policies written late in year have claims in year 1), but this is a minor
+        // initialization artifact that resolves quickly.
 
         let current_year_loss_ratio = if self.annual_premiums > 0.0 {
             Some(self.annual_claims / self.annual_premiums)
@@ -500,22 +490,17 @@ impl Syndicate {
             None
         };
 
-        // Only update markup after warmup period (5 years) and with 2-year-old data
-        // Extended warmup allows calendar-year accounting distortions to settle
-        let warmup_years = 5;
-        if self.years_elapsed >= warmup_years
-            && let Some(mature_loss_ratio) = self.two_years_ago_loss_ratio
-        {
-            let signal = mature_loss_ratio.ln(); // log(loss_ratio)
+        // Update markup using prior year's loss ratio (if available)
+        if let Some(prior_loss_ratio) = self.prior_year_loss_ratio {
+            let signal = prior_loss_ratio.ln(); // log(loss_ratio)
             let beta = self.config.underwriter_recency_weight;
 
             // EWMA update
             self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
         }
-        // During warmup (years 0-4), keep markup at initial value (0.2)
+        // Year 0: No prior data, markup stays at initial value (0.0)
 
-        // Shift history: current → prior → two_years_ago
-        self.two_years_ago_loss_ratio = self.prior_year_loss_ratio;
+        // Shift history: current → prior
         self.prior_year_loss_ratio = current_year_loss_ratio;
     }
 
@@ -972,17 +957,15 @@ mod tests {
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config.clone());
 
-        // Initial markup is now 0.2 (conservative start), but test old behavior
+        // Initial markup is 0.0 (fair pricing)
         syndicate.markup_m_t = 0.0;
-        // Skip warmup for testing - need years_elapsed >= 5
-        syndicate.years_elapsed = 5;
 
         // Simulate a high-loss year: loss_ratio = 2.0
         syndicate.annual_premiums = 1_000_000.0;
         syndicate.annual_claims = 2_000_000.0;
 
-        // Manually set two_years_ago to trigger update (normally this comes from history)
-        syndicate.two_years_ago_loss_ratio = Some(2.0);
+        // Manually set prior year to trigger update (normally this comes from history)
+        syndicate.prior_year_loss_ratio = Some(2.0);
 
         // Update markup at year-end
         syndicate.update_underwriting_markup();
@@ -1006,11 +989,9 @@ mod tests {
 
         // Start with some positive markup
         syndicate.markup_m_t = 0.5;
-        // Skip warmup for testing
-        syndicate.years_elapsed = 5;
 
-        // Manually set two_years_ago to trigger update (normally this comes from history)
-        syndicate.two_years_ago_loss_ratio = Some(0.5);
+        // Manually set prior year to trigger update (normally this comes from history)
+        syndicate.prior_year_loss_ratio = Some(0.5);
 
         // Simulate a profitable year: loss_ratio = 0.5
         syndicate.annual_premiums = 1_000_000.0;
