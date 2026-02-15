@@ -4,7 +4,7 @@
 //! - Bernoulli(b) × Gamma(μ, σ) claims
 //! - Random timing during year
 
-use crate::{Event, ModelConfig, Stats};
+use crate::{Event, ModelConfig, Stats, DAYS_PER_YEAR};
 use des::{Agent, Response};
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -49,9 +49,9 @@ impl ClaimGenerator {
         let scale = self.config.gamma_scale();
         let gamma = Gamma::new(shape, scale).unwrap();
 
-        // Year time range: [year×365, (year+1)×365)
-        let year_start = year * 365;
-        let year_end = (year + 1) * 365;
+        // Year time range: [year×DAYS_PER_YEAR, (year+1)×DAYS_PER_YEAR)
+        let year_start = year * DAYS_PER_YEAR;
+        let year_end = (year + 1) * DAYS_PER_YEAR;
 
         for &(customer_id, insurer_id) in customer_allocations {
             // Bernoulli trial: does a claim occur?
@@ -175,9 +175,9 @@ mod tests {
 
         let events = generator.generate_claims_for_year(2, &allocations);
 
-        // Year 2 time range: [730, 1095)
-        let year_start = 2 * 365;
-        let year_end = 3 * 365;
+        // Year 2 time range: [2×DAYS_PER_YEAR, 3×DAYS_PER_YEAR)
+        let year_start = 2 * DAYS_PER_YEAR;
+        let year_end = 3 * DAYS_PER_YEAR;
 
         for (time, _) in &events {
             assert!(*time >= year_start);

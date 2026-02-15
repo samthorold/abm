@@ -10,7 +10,7 @@
 //! - Track time series for cycle detection
 
 use crate::helpers::circular_distance;
-use crate::{Customer, Event, MarketStats, ModelConfig, Stats};
+use crate::{Customer, Event, MarketStats, ModelConfig, Stats, DAYS_PER_YEAR};
 use des::{Agent, Response};
 use std::collections::HashMap;
 
@@ -78,12 +78,31 @@ impl MarketCoordinator {
         self.waiting_for_prices = true;
         self.prices_received.clear();
 
-        // Request prices from all insurers
-        let time = year * 365;
+        // Request prices from all insurers at start of year
+        let time = year * DAYS_PER_YEAR;
         let mut events = Vec::new();
 
         for insurer_id in 0..self.config.num_insurers {
             events.push((time, Event::PricingRequest { year, insurer_id }));
+        }
+
+        // Schedule YearEnd event at end of year (before next YearStart)
+        // This gives time for all claims to be processed
+        if year > 1 {
+            // Emit YearEnd for previous year (starting from year 2)
+            let year_end_time = year * DAYS_PER_YEAR - 1;
+            events.push((
+                year_end_time,
+                Event::YearEnd {
+                    year: year - 1,
+                    industry_avg_claim: self.last_year_avg_claim,
+                    industry_loss_ratio: if self.industry_total_premiums > 0.0 {
+                        self.industry_total_claims / self.industry_total_premiums
+                    } else {
+                        0.0
+                    },
+                },
+            ));
         }
 
         events
@@ -103,6 +122,10 @@ impl MarketCoordinator {
     ///
     /// Greedy allocation: for each customer, find the insurer with lowest total cost
     /// Total cost = price + γ × circular_distance(customer, insurer)
+    ///
+    /// Note: Capacity constraints would require knowing individual insurer capital,
+    /// which the coordinator doesn't track. In a production system, this could be
+    /// handled via iterative allocation with capacity feedback from insurers.
     ///
     /// Returns: Vec<(customer_id, insurer_id)>
     fn clear_market(&mut self) -> Vec<(usize, usize)> {
@@ -218,8 +241,8 @@ impl MarketCoordinator {
             // Aggregate statistics
             self.aggregate_statistics(&allocations);
 
-            // Broadcast MarketCleared event
-            let time = year * 365;
+            // Broadcast MarketCleared event after all prices submitted
+            let time = year * DAYS_PER_YEAR + 2;
             vec![(
                 time,
                 Event::MarketCleared {
@@ -330,11 +353,20 @@ mod tests {
         let insurers = create_test_insurers(5);
 
         let mut coordinator = MarketCoordinator::new(config, customers, insurers);
-        let events = coordinator.start_year(1);
 
+        // First year (year 1) - only PricingRequests, no YearEnd yet
+        let events = coordinator.start_year(1);
         assert_eq!(events.len(), 5); // One PricingRequest per insurer
+
+        // Subsequent years include YearEnd for previous year
+        coordinator.last_year_avg_claim = 100.0;
+        coordinator.industry_total_premiums = 1000.0;
+        coordinator.industry_total_claims = 1000.0;
+        let events2 = coordinator.start_year(2);
+        assert_eq!(events2.len(), 6); // 5 PricingRequests + 1 YearEnd
+
         assert!(coordinator.waiting_for_prices);
-        assert_eq!(coordinator.current_year, 1);
+        assert_eq!(coordinator.current_year, 2);
     }
 
     #[test]

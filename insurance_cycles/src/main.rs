@@ -7,7 +7,7 @@ use des::EventLoop;
 use insurance_cycles::claim_generator::ClaimGenerator;
 use insurance_cycles::insurer::Insurer;
 use insurance_cycles::market_coordinator::MarketCoordinator;
-use insurance_cycles::{Customer, Event, ModelConfig, Stats};
+use insurance_cycles::{Customer, Event, ModelConfig, Stats, DAYS_PER_YEAR};
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -86,7 +86,7 @@ fn main() {
     println!("Scheduling {} years of simulation...", num_years);
     let mut initial_events = Vec::new();
     for year in 1..=num_years {
-        let time = year * 365;
+        let time = year * DAYS_PER_YEAR;
         initial_events.push((time, Event::YearStart { year }));
     }
 
@@ -95,7 +95,7 @@ fn main() {
 
     // Run simulation
     println!("Running simulation...\n");
-    let max_time = (num_years + 1) * 365;
+    let max_time = (num_years + 1) * DAYS_PER_YEAR;
     event_loop.run(max_time);
 
     println!("Simulation complete!\n");

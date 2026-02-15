@@ -6,7 +6,7 @@
 //!
 //! Based on Owadally et al. (2018) insurance cycle model
 
-use crate::{Event, InsurerStats, ModelConfig, Stats};
+use crate::{Event, InsurerStats, ModelConfig, Stats, DAYS_PER_YEAR};
 use des::{Agent, Response};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -188,8 +188,8 @@ impl Insurer {
         self.current_actuarial_price = actuarial_price;
         self.current_market_price = market_price;
 
-        // Schedule PriceSubmitted event at same time
-        let time = year * 365; // Convert year to days
+        // Schedule PriceSubmitted event after pricing calculation
+        let time = year * DAYS_PER_YEAR + 1; // Day 1 of year (after PricingRequest at day 0)
         vec![(
             time,
             Event::PriceSubmitted {
