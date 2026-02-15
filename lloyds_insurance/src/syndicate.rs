@@ -220,17 +220,62 @@ impl Syndicate {
     fn handle_follow_quote_request(
         &mut self,
         risk_id: usize,
-        _lead_price: f64,
-        _peril_region: usize,
-        _risk_limit: f64,
+        lead_price: f64,
+        peril_region: usize,
+        risk_limit: f64,
         current_t: usize,
     ) -> Vec<(usize, Event)> {
-        // Followers accept the lead's price and offer their line size
-        // (In this simplified version, we don't use lead_price for pricing decisions)
-        let line_size = self.config.default_follow_line_size;
+        // Calculate what we think the price should be (our independent assessment)
+        let baseline_line_size = self.config.default_follow_line_size;
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
+        let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        let my_price = self.apply_underwriting_markup(actuarial_price);
 
-        // TODO: Add VaR exposure management check here (Priority 2)
-        // TODO: Add pricing strength adjustment (Priority 3)
+        // Calculate pricing strength: my_price / lead_price
+        // - pricing_strength > 1.0: Lead price is higher than we think → favorable, offer more
+        // - pricing_strength < 1.0: Lead price is lower than we think → unfavorable, offer less
+        // - pricing_strength < 0.5: Lead price is too low → decline to quote
+        let pricing_strength = if lead_price > 0.0 {
+            my_price / lead_price
+        } else {
+            0.0
+        };
+
+        // Adjust line size based on pricing strength
+        let line_size = if pricing_strength < 0.5 {
+            // Lead price is very unfavorable (more than 2x what we think it should be)
+            // Decline to quote
+            return Vec::new();
+        } else if pricing_strength > 1.0 {
+            // Lead price is favorable (lower than what we would charge)
+            // Offer more, but cap at 2x baseline
+            let scale_factor = pricing_strength.min(2.0);
+            baseline_line_size * scale_factor
+        } else {
+            // Lead price is somewhat unfavorable but acceptable
+            // Scale down proportionally
+            baseline_line_size * pricing_strength
+        };
+
+        // VaR exposure management check
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            let proposed_exposure = line_size * risk_limit;
+            match var_em.evaluate_quote(peril_region, proposed_exposure) {
+                ExposureDecision::Accept => {
+                    // Proceed with quote
+                }
+                ExposureDecision::Reject => {
+                    // Decline to quote
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(_factor) => {
+                    // For followers, we can't scale premium (we accept lead's price)
+                    // Instead, reduce line size to manage exposure
+                    // Decline the quote if VaR suggests scaling
+                    return Vec::new();
+                }
+            }
+        }
 
         vec![(
             current_t,
@@ -890,6 +935,82 @@ mod tests {
         assert!(
             (low_price / baseline_price).abs() < 1.0,
             "e^-0.5 ≈ 0.606, so price should be ~40% lower"
+        );
+    }
+
+    #[test]
+    fn test_pricing_strength_adjusts_follow_line_size() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let baseline_line_size = config.default_follow_line_size;
+
+        // Calculate what the syndicate thinks is a fair price
+        let industry_avg_loss = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let actuarial_price = syndicate.calculate_actuarial_price(1, industry_avg_loss);
+        let fair_price = syndicate.apply_underwriting_markup(actuarial_price);
+
+        // Case 1: Lead price is favorable (lower than our assessment)
+        // pricing_strength = our_price / lead_price > 1.0 → offer more
+        let favorable_lead_price = fair_price * 0.5; // Half of what we'd charge
+        let resp =
+            syndicate.handle_follow_quote_request(1, favorable_lead_price, 0, 10_000_000.0, 0);
+        assert!(
+            !resp.is_empty(),
+            "Should quote when lead price is favorable"
+        );
+        if let Event::FollowQuoteOffered { line_size, .. } = &resp[0].1 {
+            assert!(
+                *line_size > baseline_line_size,
+                "Should offer more than baseline when lead price is favorable: {} vs {}",
+                line_size,
+                baseline_line_size
+            );
+        }
+
+        // Case 2: Lead price is at our assessment (pricing_strength ≈ 1.0)
+        let fair_lead_price = fair_price;
+        let resp = syndicate.handle_follow_quote_request(1, fair_lead_price, 0, 10_000_000.0, 0);
+        assert!(!resp.is_empty(), "Should quote when lead price is fair");
+        if let Event::FollowQuoteOffered { line_size, .. } = &resp[0].1 {
+            assert!(
+                (*line_size - baseline_line_size).abs() < 0.01,
+                "Should offer baseline when lead price is fair: {} vs {}",
+                line_size,
+                baseline_line_size
+            );
+        }
+
+        // Case 3: Lead price is somewhat unfavorable (pricing_strength between 0.5 and 1.0)
+        // Should scale down but still quote
+        let unfavorable_lead_price = fair_price * 1.5; // 50% higher than we'd charge
+        let resp =
+            syndicate.handle_follow_quote_request(1, unfavorable_lead_price, 0, 10_000_000.0, 0);
+        assert!(
+            !resp.is_empty(),
+            "Should still quote when lead price is moderately unfavorable"
+        );
+        if let Event::FollowQuoteOffered { line_size, .. } = &resp[0].1 {
+            assert!(
+                *line_size < baseline_line_size,
+                "Should offer less than baseline when lead price is unfavorable: {} vs {}",
+                line_size,
+                baseline_line_size
+            );
+        }
+
+        // Case 4: Lead price is very unfavorable (pricing_strength < 0.5)
+        // Should decline to quote
+        let very_unfavorable_lead_price = fair_price * 3.0; // 3x what we'd charge
+        let resp = syndicate.handle_follow_quote_request(
+            1,
+            very_unfavorable_lead_price,
+            0,
+            10_000_000.0,
+            0,
+        );
+        assert!(
+            resp.is_empty(),
+            "Should decline to quote when lead price is very unfavorable (pricing_strength < 0.5)"
         );
     }
 }
