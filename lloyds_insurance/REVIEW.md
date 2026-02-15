@@ -183,6 +183,16 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
    - Reduces agent count from 11 to 10 (9% reduction in broadcast fan-out)
    - Added 3 tests for syndicate selection behavior
    - Verified simulation output: identical behavior with one less agent
-6. **Implement underwriting markup** — required for underwriting cycle emergence
+6. ✅ **COMPLETED - Implement underwriting markup** (Equation 3: P_t = P_at · e^(m_t))
+   - Added `markup_m_t` field to Syndicate to track EWMA of market conditions
+   - Implemented `apply_underwriting_markup()` method: multiplies actuarial price by e^(m_t)
+   - Implemented `update_underwriting_markup()` method: EWMA using loss ratios
+   - Formula: m_t = β · m_{t-1} + (1-β) · log(loss_ratio_t)
+   - High loss ratios (>1) → positive m_t → higher premiums (competitive pressure)
+   - Low loss ratios (<1) → negative m_t → lower premiums (market competition)
+   - Markup updated on Year events using annual loss ratio data
+   - Applied markup in lead and follow quote handlers
+   - Added 3 tests verifying markup mechanism works correctly
+   - Verified simulation output: premiums now respond to loss experience
 7. **Tighten the loss ratio test** or add a longer-running integration test with narrower bounds
 8. **Implement follow pricing strength** — the lead-follow story is the paper's strongest validation (zero insolvencies in Scenario 4)

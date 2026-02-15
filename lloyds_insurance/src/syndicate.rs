@@ -14,6 +14,10 @@ pub struct Syndicate {
     // Annual tracking for dividend calculation
     annual_premiums: f64,
     annual_claims: f64,
+
+    // Underwriting markup: exponentially weighted moving average of market conditions
+    // m_t captures competitive pressure based on loss experience
+    markup_m_t: f64,
 }
 
 impl Syndicate {
@@ -29,6 +33,7 @@ impl Syndicate {
             stats: SyndicateStats::new(syndicate_id, initial_capital),
             annual_premiums: 0.0,
             annual_claims: 0.0,
+            markup_m_t: 0.0, // Start at 0 (no markup, e^0 = 1)
         }
     }
 
@@ -75,6 +80,15 @@ impl Syndicate {
         base_price + volatility_loading
     }
 
+    fn apply_underwriting_markup(&self, actuarial_price: f64) -> f64 {
+        // Apply underwriting markup: P_t = P_at · e^(m_t)
+        // Where m_t is an EWMA capturing competitive pressure
+        // - m_t > 0: recent losses high → increase premium
+        // - m_t = 0: balanced → no adjustment
+        // - m_t < 0: recent profits high → decrease premium (competitive pressure)
+        actuarial_price * self.markup_m_t.exp()
+    }
+
     fn handle_lead_quote_request(
         &mut self,
         risk_id: usize,
@@ -84,8 +98,9 @@ impl Syndicate {
         let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
         let line_size = self.config.default_lead_line_size;
 
-        // calculate_actuarial_price returns price for our LINE SHARE (already scaled)
-        let price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        // Calculate actuarial price and apply underwriting markup
+        let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        let price = self.apply_underwriting_markup(actuarial_price);
 
         vec![(
             current_t,
@@ -103,8 +118,9 @@ impl Syndicate {
         let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
         let line_size = self.config.default_lead_line_size;
 
-        // calculate_actuarial_price returns price for our line share (already scaled)
-        let price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        // Calculate actuarial price and apply underwriting markup (must match quote)
+        let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        let price = self.apply_underwriting_markup(actuarial_price);
 
         self.capital += price;
         self.premium_history.push(price);
@@ -150,7 +166,8 @@ impl Syndicate {
 
         // For followers, we use the same pricing logic but with the follow line size
         // (which is passed in, not the default)
-        let full_risk_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        let full_risk_actuarial = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        let full_risk_price = self.apply_underwriting_markup(full_risk_actuarial);
 
         // Adjust for the actual line size allocated (may be less than requested)
         let price = (full_risk_price / self.config.default_lead_line_size) * line_size;
@@ -196,6 +213,10 @@ impl Syndicate {
     }
 
     fn handle_year_end(&mut self) {
+        // Update underwriting markup BEFORE checking insolvency
+        // Even insolvent syndicates update their market view (though they won't quote)
+        self.update_underwriting_markup();
+
         // Insolvent syndicates don't pay dividends
         if self.stats.is_insolvent {
             self.annual_premiums = 0.0;
@@ -219,6 +240,26 @@ impl Syndicate {
         // Reset annual counters
         self.annual_premiums = 0.0;
         self.annual_claims = 0.0;
+    }
+
+    fn update_underwriting_markup(&mut self) {
+        // Update m_t using EWMA: m_t = β · m_{t-1} + (1-β) · signal_t
+        // where signal_t = log(loss_ratio_t)
+        //
+        // This captures competitive pressure:
+        // - High loss ratios (>1) → positive signal → m_t increases → higher premiums
+        // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
+        // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
+
+        if self.annual_premiums > 0.0 {
+            let loss_ratio = self.annual_claims / self.annual_premiums;
+            let signal = loss_ratio.ln(); // log(loss_ratio)
+            let beta = self.config.underwriter_recency_weight;
+
+            // EWMA update
+            self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
+        }
+        // If no premiums this year, keep previous m_t unchanged
     }
 
     fn update_stats(&mut self) {
@@ -593,5 +634,93 @@ mod tests {
 
         // Also verify stats match
         assert_eq!(syndicate.stats.total_premiums_collected, quoted_price);
+    }
+
+    #[test]
+    fn test_underwriting_markup_increases_after_losses() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Initial markup should be 0 (no markup)
+        assert_eq!(syndicate.markup_m_t, 0.0);
+
+        // Simulate a high-loss year: loss_ratio = 2.0
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 2_000_000.0;
+
+        // Update markup at year-end
+        syndicate.update_underwriting_markup();
+
+        // markup should be positive: m_t = 0.2 * 0 + 0.8 * ln(2.0) ≈ 0.554
+        assert!(
+            syndicate.markup_m_t > 0.0,
+            "Markup should increase after high losses"
+        );
+        assert!(
+            syndicate.markup_m_t > 0.5 && syndicate.markup_m_t < 0.6,
+            "Markup should be around 0.554, got {}",
+            syndicate.markup_m_t
+        );
+    }
+
+    #[test]
+    fn test_underwriting_markup_decreases_after_profits() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Start with some positive markup
+        syndicate.markup_m_t = 0.5;
+
+        // Simulate a profitable year: loss_ratio = 0.5
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 500_000.0;
+
+        // Update markup
+        syndicate.update_underwriting_markup();
+
+        // markup should be less than before: m_t = 0.2 * 0.5 + 0.8 * ln(0.5) ≈ -0.454
+        assert!(
+            syndicate.markup_m_t < 0.0,
+            "Markup should decrease after low losses (profitable period)"
+        );
+    }
+
+    #[test]
+    fn test_underwriting_markup_affects_premium() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let industry_avg_loss = config.gamma_mean * config.yearly_claim_frequency;
+
+        // Calculate baseline price with no markup
+        let baseline_price = syndicate.calculate_actuarial_price(1, industry_avg_loss);
+        let baseline_final = syndicate.apply_underwriting_markup(baseline_price);
+        assert_eq!(
+            baseline_final, baseline_price,
+            "With m_t=0, markup should be 1.0"
+        );
+
+        // Set positive markup (simulate post-catastrophe environment)
+        syndicate.markup_m_t = 0.5;
+        let high_price = syndicate.apply_underwriting_markup(baseline_price);
+        assert!(
+            high_price > baseline_price,
+            "Positive markup should increase price"
+        );
+        assert!(
+            (high_price / baseline_price - 1.0).abs() < 0.01 || high_price / baseline_price > 1.6,
+            "e^0.5 ≈ 1.649, so price should be ~65% higher"
+        );
+
+        // Set negative markup (simulate very profitable period)
+        syndicate.markup_m_t = -0.5;
+        let low_price = syndicate.apply_underwriting_markup(baseline_price);
+        assert!(
+            low_price < baseline_price,
+            "Negative markup should decrease price"
+        );
+        assert!(
+            (low_price / baseline_price).abs() < 1.0,
+            "e^-0.5 ≈ 0.606, so price should be ~40% lower"
+        );
     }
 }
