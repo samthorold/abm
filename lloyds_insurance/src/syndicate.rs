@@ -24,6 +24,12 @@ pub struct Syndicate {
     // m_t captures competitive pressure based on loss experience
     markup_m_t: f64,
 
+    // Loss ratio history for lagged markup update (fixes cohort mismatch)
+    // We use 2-year lag to ensure claims have fully developed before using for pricing
+    // (policies have 365-day terms, so year N claims can extend into year N+1)
+    prior_year_loss_ratio: Option<f64>,    // Year N-1
+    two_years_ago_loss_ratio: Option<f64>, // Year N-2
+
     // Dynamic industry statistics (updated annually from MarketStatisticsCollector)
     // These replace the hardcoded config values for actuarial pricing
     industry_lambda_t: f64, // Industry-wide claim frequency (claims per policy)
@@ -67,7 +73,11 @@ impl Syndicate {
             annual_claims: 0.0,
             annual_policies_written: 0,
             annual_claims_count: 0,
-            markup_m_t: 0.0, // Start at 0 (no markup, e^0 = 1)
+            // Conservative initial markup: 0.2 → e^0.2 ≈ 1.22 (22% loading)
+            // Syndicates price conservatively in new markets until reliable data emerges
+            markup_m_t: 0.2,
+            prior_year_loss_ratio: None, // No prior experience yet
+            two_years_ago_loss_ratio: None,
             industry_lambda_t,
             industry_mu_t,
             years_elapsed: 0,
@@ -458,16 +468,43 @@ impl Syndicate {
         // - High loss ratios (>1) → positive signal → m_t increases → higher premiums
         // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
         // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
+        //
+        // COHORT FIX: Use 2-YEAR lagged loss ratio with 3-year warmup period.
+        //
+        // Problem: Calendar-year accounting creates cohort mismatch.
+        // - Policies written in year N have 365-day terms (can have claims in year N+1)
+        // - Year N loss ratio = (claims from years N-1 AND N) / (premiums from year N)
+        // - Year 0 always shows artificially low loss ratio (claims still pending)
+        //
+        // Solution: Warmup period + 2-year lag
+        // - Years 0-2: Keep markup = 0 (warmup - insufficient mature data)
+        // - Year 3+: Use loss ratio from 2 years ago (first use is year 1's data in year 3)
+        //
+        // This ensures we only price based on loss experience where claims have fully developed.
 
-        if self.annual_premiums > 0.0 {
-            let loss_ratio = self.annual_claims / self.annual_premiums;
-            let signal = loss_ratio.ln(); // log(loss_ratio)
+        let current_year_loss_ratio = if self.annual_premiums > 0.0 {
+            Some(self.annual_claims / self.annual_premiums)
+        } else {
+            None
+        };
+
+        // Only update markup after warmup period (5 years) and with 2-year-old data
+        // Extended warmup allows calendar-year accounting distortions to settle
+        let warmup_years = 5;
+        if self.years_elapsed >= warmup_years
+            && let Some(mature_loss_ratio) = self.two_years_ago_loss_ratio
+        {
+            let signal = mature_loss_ratio.ln(); // log(loss_ratio)
             let beta = self.config.underwriter_recency_weight;
 
             // EWMA update
             self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
         }
-        // If no premiums this year, keep previous m_t unchanged
+        // During warmup (years 0-4), keep markup at initial value (0.2)
+
+        // Shift history: current → prior → two_years_ago
+        self.two_years_ago_loss_ratio = self.prior_year_loss_ratio;
+        self.prior_year_loss_ratio = current_year_loss_ratio;
     }
 
     fn update_stats(&mut self) {
@@ -502,6 +539,9 @@ impl Agent<Event, Stats> for Syndicate {
             self.handle_year_end();
             self.update_stats();
 
+            // Calculate uniform_deviation from stats
+            let uniform_deviation = self.stats.uniform_deviation;
+
             // Report capital to market statistics collector
             return Response::events(vec![(
                 current_t,
@@ -512,6 +552,8 @@ impl Agent<Event, Stats> for Syndicate {
                     annual_claims,
                     num_policies: annual_policies_written,
                     num_claims: annual_claims_count,
+                    markup_m_t: self.markup_m_t,
+                    uniform_deviation,
                 },
             )]);
         }
@@ -893,14 +935,20 @@ mod tests {
 
         // Step 3: Verify the premium collected matches the quoted price
         let premium_collected = syndicate.capital - initial_capital;
-        assert_eq!(
-            premium_collected, quoted_price,
-            "Premium collected (${:.0}) should match quoted price (${:.0})",
-            premium_collected, quoted_price
+        assert!(
+            (premium_collected - quoted_price).abs() < 0.01,
+            "Premium collected (${:.2}) should match quoted price (${:.2}) within $0.01",
+            premium_collected,
+            quoted_price
         );
 
-        // Also verify stats match
-        assert_eq!(syndicate.stats.total_premiums_collected, quoted_price);
+        // Also verify stats match (with floating-point tolerance)
+        assert!(
+            (syndicate.stats.total_premiums_collected - quoted_price).abs() < 0.01,
+            "Stats premium (${:.2}) should match quoted price (${:.2}) within $0.01",
+            syndicate.stats.total_premiums_collected,
+            quoted_price
+        );
     }
 
     #[test]
@@ -908,12 +956,17 @@ mod tests {
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config.clone());
 
-        // Initial markup should be 0 (no markup)
-        assert_eq!(syndicate.markup_m_t, 0.0);
+        // Initial markup is now 0.2 (conservative start), but test old behavior
+        syndicate.markup_m_t = 0.0;
+        // Skip warmup for testing - need years_elapsed >= 5
+        syndicate.years_elapsed = 5;
 
         // Simulate a high-loss year: loss_ratio = 2.0
         syndicate.annual_premiums = 1_000_000.0;
         syndicate.annual_claims = 2_000_000.0;
+
+        // Manually set two_years_ago to trigger update (normally this comes from history)
+        syndicate.two_years_ago_loss_ratio = Some(2.0);
 
         // Update markup at year-end
         syndicate.update_underwriting_markup();
@@ -937,6 +990,11 @@ mod tests {
 
         // Start with some positive markup
         syndicate.markup_m_t = 0.5;
+        // Skip warmup for testing
+        syndicate.years_elapsed = 5;
+
+        // Manually set two_years_ago to trigger update (normally this comes from history)
+        syndicate.two_years_ago_loss_ratio = Some(0.5);
 
         // Simulate a profitable year: loss_ratio = 0.5
         syndicate.annual_premiums = 1_000_000.0;
@@ -957,6 +1015,9 @@ mod tests {
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config.clone());
         let industry_avg_loss = config.gamma_mean * config.yearly_claim_frequency;
+
+        // Set markup to 0 for baseline testing
+        syndicate.markup_m_t = 0.0;
 
         // Calculate baseline price with no markup
         let baseline_price = syndicate.calculate_actuarial_price(1, industry_avg_loss);

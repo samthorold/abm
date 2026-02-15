@@ -1,4 +1,6 @@
-use crate::{Event, MarketSnapshot, Stats, TimeSeriesStats};
+use crate::{
+    CombinedMarketStats, Event, MarketSnapshot, Stats, SyndicateTimeSeriesStats, TimeSeriesStats,
+};
 use des::{Agent, Response};
 use std::collections::HashMap;
 
@@ -21,11 +23,16 @@ const DAYS_PER_YEAR: usize = 365;
 pub struct MarketStatisticsCollector {
     num_syndicates: usize,
     time_series: TimeSeriesStats,
+    syndicate_time_series: SyndicateTimeSeriesStats, // NEW: Per-syndicate time series
 
     // Temporary storage for collecting stats within a single time period
     current_year: usize,
     current_day: usize,
     pending_reports: HashMap<usize, SyndicateReport>,
+
+    // NEW: Catastrophe tracking for current year
+    cat_event_occurred: bool,
+    cat_event_total_loss: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +41,10 @@ struct SyndicateReport {
     is_insolvent: bool,
     annual_premiums: f64,
     annual_claims: f64,
-    num_policies: usize, // Annual policies written (not cumulative)
-    num_claims: usize,   // Annual claims received (not cumulative)
+    num_policies: usize,    // Annual policies written (not cumulative)
+    num_claims: usize,      // Annual claims received (not cumulative)
+    markup_m_t: f64,        // NEW: Underwriting markup
+    uniform_deviation: f64, // NEW: Exposure uniformity metric
 }
 
 impl MarketStatisticsCollector {
@@ -43,9 +52,12 @@ impl MarketStatisticsCollector {
         Self {
             num_syndicates,
             time_series: TimeSeriesStats::new(),
+            syndicate_time_series: SyndicateTimeSeriesStats::new(),
             current_year: 0,
             current_day: 0,
             pending_reports: HashMap::new(),
+            cat_event_occurred: false,
+            cat_event_total_loss: 0.0,
         }
     }
 
@@ -58,8 +70,13 @@ impl MarketStatisticsCollector {
         self.current_year = current_t / DAYS_PER_YEAR;
         self.current_day = current_t;
         self.pending_reports.clear();
+
+        // Reset catastrophe tracking for new year
+        self.cat_event_occurred = false;
+        self.cat_event_total_loss = 0.0;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_syndicate_report(
         &mut self,
         syndicate_id: usize,
@@ -68,6 +85,8 @@ impl MarketStatisticsCollector {
         annual_claims: f64,
         num_policies: usize,
         num_claims: usize,
+        markup_m_t: f64,
+        uniform_deviation: f64,
     ) -> Vec<(usize, Event)> {
         // Store the report
         self.pending_reports.insert(
@@ -79,6 +98,8 @@ impl MarketStatisticsCollector {
                 annual_claims,
                 num_policies,
                 num_claims,
+                markup_m_t,
+                uniform_deviation,
             },
         );
 
@@ -126,6 +147,58 @@ impl MarketStatisticsCollector {
             0.0
         };
 
+        // NEW: Calculate premium standard deviation
+        let premium_values: Vec<f64> = self
+            .pending_reports
+            .values()
+            .filter(|r| r.num_policies > 0)
+            .map(|r| r.annual_premiums / r.num_policies as f64)
+            .collect();
+        let premium_std_dev = if premium_values.len() > 1 {
+            let mean = premium_values.iter().sum::<f64>() / premium_values.len() as f64;
+            let variance = premium_values
+                .iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f64>()
+                / premium_values.len() as f64;
+            variance.sqrt()
+        } else {
+            0.0
+        };
+
+        // NEW: Calculate markup metrics
+        let markup_values: Vec<f64> = self
+            .pending_reports
+            .values()
+            .map(|r| r.markup_m_t)
+            .collect();
+        let markup_avg = if !markup_values.is_empty() {
+            markup_values.iter().sum::<f64>() / markup_values.len() as f64
+        } else {
+            0.0
+        };
+        let markup_std_dev = if markup_values.len() > 1 {
+            let variance = markup_values
+                .iter()
+                .map(|v| (v - markup_avg).powi(2))
+                .sum::<f64>()
+                / markup_values.len() as f64;
+            variance.sqrt()
+        } else {
+            0.0
+        };
+
+        // NEW: Calculate average uniform deviation
+        let avg_uniform_deviation = if !self.pending_reports.is_empty() {
+            self.pending_reports
+                .values()
+                .map(|r| r.uniform_deviation)
+                .sum::<f64>()
+                / self.pending_reports.len() as f64
+        } else {
+            0.0
+        };
+
         // Calculate industry-wide loss statistics from syndicate participations
         //
         // IMPORTANT: These statistics are PERPARTICIPATION, not per-risk:
@@ -147,6 +220,7 @@ impl MarketStatisticsCollector {
             0.0
         };
 
+        // Create market-level snapshot
         let snapshot = MarketSnapshot {
             year: self.current_year,
             day: self.current_day,
@@ -156,9 +230,37 @@ impl MarketStatisticsCollector {
             num_insolvent_syndicates: num_insolvent,
             total_capital,
             total_policies: total_annual_policies,
+            premium_std_dev,
+            markup_avg,
+            markup_std_dev,
+            cat_event_occurred: self.cat_event_occurred,
+            cat_event_loss: self.cat_event_total_loss,
+            avg_uniform_deviation,
         };
 
         self.time_series.snapshots.push(snapshot);
+
+        // NEW: Create per-syndicate snapshots
+        for (syndicate_id, report) in &self.pending_reports {
+            let loss_ratio = if report.annual_premiums > 0.0 {
+                report.annual_claims / report.annual_premiums
+            } else {
+                0.0
+            };
+
+            self.syndicate_time_series
+                .snapshots
+                .push(crate::SyndicateSnapshot {
+                    year: self.current_year,
+                    syndicate_id: *syndicate_id,
+                    capital: report.capital,
+                    markup_m_t: report.markup_m_t,
+                    loss_ratio,
+                    num_policies: report.num_policies,
+                    annual_premiums: report.annual_premiums,
+                    annual_claims: report.annual_claims,
+                });
+        }
 
         // Clear pending reports after creating snapshot
         self.pending_reports.clear();
@@ -194,6 +296,8 @@ impl Agent<Event, Stats> for MarketStatisticsCollector {
                 annual_claims,
                 num_policies,
                 num_claims,
+                markup_m_t,
+                uniform_deviation,
             } => {
                 let events = self.handle_syndicate_report(
                     *syndicate_id,
@@ -202,16 +306,33 @@ impl Agent<Event, Stats> for MarketStatisticsCollector {
                     *annual_claims,
                     *num_policies,
                     *num_claims,
+                    *markup_m_t,
+                    *uniform_deviation,
                 );
                 Response::events(events)
+            }
+            Event::YearEndCatastropheReport {
+                year: _,
+                total_loss,
+                num_events,
+            } => {
+                // Track catastrophe occurrence for current year
+                if *num_events > 0 {
+                    self.cat_event_occurred = true;
+                    self.cat_event_total_loss += total_loss;
+                }
+                Response::new()
             }
             _ => Response::new(),
         }
     }
 
     fn stats(&self) -> Stats {
-        // Return time series stats (market-level aggregated data across all syndicates)
-        Stats::TimeSeriesStats(self.time_series.clone())
+        // Return combined market stats (both market-level and syndicate-level time series)
+        Stats::CombinedMarketStats(CombinedMarketStats {
+            market_series: self.time_series.clone(),
+            syndicate_series: self.syndicate_time_series.clone(),
+        })
     }
 }
 
@@ -243,6 +364,8 @@ mod tests {
                 annual_claims: 800_000.0,
                 num_policies: 10,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
         collector.act(
@@ -254,6 +377,8 @@ mod tests {
                 annual_claims: 900_000.0,
                 num_policies: 12,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
 
@@ -280,6 +405,8 @@ mod tests {
                 annual_claims: 800_000.0,
                 num_policies: 10,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         ); // Solvent
         collector.act(
@@ -291,6 +418,8 @@ mod tests {
                 annual_claims: 1_000_000.0,
                 num_policies: 5,
                 num_claims: 2,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         ); // Insolvent
         collector.act(
@@ -302,6 +431,8 @@ mod tests {
                 annual_claims: 700_000.0,
                 num_policies: 9,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         ); // Solvent
 
@@ -326,6 +457,8 @@ mod tests {
                 annual_claims: 800_000.0,
                 num_policies: 10,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
         collector.act(
@@ -337,6 +470,8 @@ mod tests {
                 annual_claims: 900_000.0,
                 num_policies: 12,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
         // Snapshot 1 created when all year 1 reports received
@@ -353,6 +488,8 @@ mod tests {
                 annual_claims: 850_000.0,
                 num_policies: 11,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
         collector.act(
@@ -364,6 +501,8 @@ mod tests {
                 annual_claims: 950_000.0,
                 num_policies: 10,
                 num_claims: 1,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
         // Snapshot 2 created when all year 2 reports received
@@ -392,6 +531,8 @@ mod tests {
                 annual_claims: 1_600_000.0,   // Loss ratio = 0.8
                 num_policies: 20,
                 num_claims: 2,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
         collector.act(
@@ -403,6 +544,8 @@ mod tests {
                 annual_claims: 2_400_000.0,   // Loss ratio = 0.8
                 num_policies: 30,
                 num_claims: 3,
+                markup_m_t: 0.0,
+                uniform_deviation: 0.0,
             },
         );
 
