@@ -312,6 +312,119 @@ Run comprehensive tests before pushing:
 cargo test --all-features
 ```
 
+## Parallel Execution
+
+### Overview
+
+The `des::parallel` module provides utilities for running multiple independent EventLoop scenarios concurrently. This is essential for:
+
+- **Monte Carlo simulations**: Multiple runs with different random seeds
+- **Parameter sweeps**: Varying model configurations to explore behavior
+- **Sensitivity analysis**: Testing robustness across parameter ranges
+- **Large-scale experiments**: Running 100s-1000s of scenarios efficiently
+
+### Basic Usage
+
+```rust
+use des::parallel::run_parallel;
+
+// Run 100 independent scenarios
+let results = run_parallel(100, |scenario_id| {
+    let seed = base_seed + scenario_id as u64;
+    create_event_loop(&config, seed)
+}, max_time);
+
+// Process results
+for (id, result) in results.iter().enumerate() {
+    match result {
+        Ok(stats) => println!("Scenario {} succeeded", id),
+        Err(e) => eprintln!("Scenario {} failed: {}", id, e),
+    }
+}
+```
+
+### Builder Pattern (Advanced Control)
+
+For more control over parallelism, use `ParallelRunner`:
+
+```rust
+use des::parallel::{ParallelRunner, simple_progress_reporter};
+
+let results = ParallelRunner::new(1000, builder_fn)
+    .num_threads(8)                              // Limit to 8 threads
+    .progress(simple_progress_reporter(100))     // Print every 100 scenarios
+    .run(max_time);
+```
+
+### Determinism Guarantees
+
+Parallel execution preserves determinism when:
+
+1. **Unique seeds per scenario**: Use `scenario_id` to derive deterministic seeds
+   ```rust
+   let seed = base_seed + scenario_id as u64;
+   ```
+
+2. **Seeded RNGs in agents**: Use `StdRng::seed_from_u64(seed)` in agent constructors
+
+3. **No shared mutable state**: Each scenario is fully independent
+
+**Result**: Same inputs → same outputs, regardless of execution order or thread count.
+
+### Error Handling
+
+Failed scenarios (panics) are isolated and returned as `Err(String)` in the results vector. Other scenarios continue normally:
+
+```rust
+let results = run_parallel(100, builder, max_time);
+
+let successful: Vec<_> = results.iter()
+    .filter_map(|r| r.as_ref().ok())
+    .collect();
+
+println!("Success rate: {}/{}", successful.len(), results.len());
+```
+
+### Memory Management
+
+For large batches (>1000 scenarios), use `run_batched()` to limit concurrent scenarios:
+
+```rust
+use des::parallel::run_batched;
+
+// Run 10000 scenarios, but only 100 concurrent at a time
+let results = run_batched(10000, 100, builder, max_time);
+```
+
+This prevents memory exhaustion while still leveraging parallelism.
+
+### Migration Example
+
+**Before (sequential)**:
+```rust
+let mut sessions = Vec::new();
+for session_id in 0..num_sessions {
+    let results = run_session(&config, session_id);
+    sessions.push(results);
+}
+```
+
+**After (parallel)**:
+```rust
+use des::parallel::run_parallel;
+
+let results = run_parallel(num_sessions, |session_id| {
+    create_session_event_loop(&config, session_id)
+}, max_time);
+```
+
+### Performance Tips
+
+1. **Thread count**: Default (num CPUs) is usually optimal. Reduce if memory-constrained.
+2. **Batching**: Use `run_batched()` for 1000+ scenarios to limit memory usage.
+3. **Progress reporting**: Use `simple_progress_reporter()` to monitor long-running experiments.
+4. **Benchmarking**: Profile to find optimal parallelism for your specific simulation.
+
 ## Working with This Codebase
 
 ### Adding New Simulations
