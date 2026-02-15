@@ -145,6 +145,66 @@ cargo test noddy_run
 5. Create `main.rs` with EventLoop initialization
 6. Focus on agent behavior design and event scheduling logic
 
+### Agent Design Patterns
+
+When implementing a simulation, choose between two patterns based on your domain model:
+
+#### Pattern 1: All-Entity Agents (Recommended Default)
+
+Use when all agents represent actual entities in the domain that make autonomous decisions.
+
+**Example**: `simple_queue`
+- `ConsumerProcess`: Generates consumer arrivals (entity behavior)
+- `Resource`: Bank counter managing capacity (entity in the system)
+
+**Characteristics**:
+- Every agent represents something in the real system
+- Agents interact via events (e.g., ResourceRequested, ResourceReleased)
+- No central orchestrator needed
+- Emergent behavior from agent interactions
+
+**When to use**:
+- Multi-agent systems where entities interact directly
+- Simulations modeling emergent phenomena
+- When there's no central coordinator in the real system
+
+#### Pattern 2: Coordinator + Entity Agents
+
+Use when the domain has a clear separation between mechanism and participants.
+
+**Example**: `zi_traders`
+- `Coordinator`: Market mechanism (orchestration, not a participant)
+- `Traders`: Actual market participants making decisions
+
+**Characteristics**:
+- Coordinator implements system rules/mechanism
+- Coordinator maintains shared state (order book, active participants)
+- Entities respond to coordinator events (OrderRequest, Transaction)
+- Coordinator handles turn-taking, resource allocation, rule enforcement
+
+**When to use**:
+- Simulations of markets, auctions, games (clear mechanism + participants)
+- When the paper/model explicitly separates mechanism from agents
+- When strict turn-taking or centralized state management is required
+
+**Tradeoffs**:
+- ✅ Matches domain model (mechanism vs participants)
+- ✅ Easier to enforce system rules centrally
+- ✅ Clear separation of concerns
+- ⚠️ Broadcast overhead (coordinator receives events it may ignore)
+- ⚠️ Shadow state maintenance (coordinator tracks participant state)
+- ⚠️ More complex event flow (request → response → notification cycles)
+
+**Implementation guidelines for Coordinator pattern**:
+- Coordinator receives ALL events via broadcast; filter for relevant ones
+- Use consistent event timing (schedule next iteration at `current_t + 1`)
+- Maintain per-participant state in HashMaps for O(1) lookups, not linear searches
+- Use `HashSet` for active participant tracking (O(1) add/remove vs Vec)
+- Add module documentation explaining why Coordinator is an Agent
+- Consider adding timeout detection for non-responding participants
+
+**Key insight**: The pattern choice should reflect the domain model. If the real system has a central mechanism (market, auction house, game referee), use Pattern 2. If the real system is fully decentralized (interacting entities), use Pattern 1.
+
 ### Modifying the DES Core
 
 The `des` crate is intentionally minimal. Changes should:
