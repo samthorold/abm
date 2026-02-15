@@ -132,6 +132,41 @@ impl Syndicate {
         actuarial_price * self.markup_m_t.exp()
     }
 
+    /// Premium-based exposure management (Scenario 1)
+    ///
+    /// Simple exposure management using premium-to-capital ratio.
+    /// Returns ExposureDecision based on whether adding the proposed premium
+    /// would exceed the premium_reserve_ratio threshold.
+    fn check_premium_exposure(&self, proposed_premium: f64) -> ExposureDecision {
+        if self.capital <= 0.0 {
+            // No capital → reject
+            return ExposureDecision::Reject;
+        }
+
+        // Calculate premium-to-capital ratio after accepting this quote
+        let proposed_total_premium = self.annual_premiums + proposed_premium;
+        let premium_to_capital_ratio = proposed_total_premium / self.capital;
+
+        // Check against threshold
+        let threshold = self.config.premium_reserve_ratio;
+
+        if premium_to_capital_ratio <= threshold {
+            // Within limits
+            ExposureDecision::Accept
+        } else {
+            // Exceeds threshold - either reject or scale premium up
+            // Scaling premium up makes quote less attractive, reducing our participation
+            let excess_ratio = premium_to_capital_ratio / threshold;
+            if excess_ratio > 2.0 {
+                // Far over threshold → reject
+                ExposureDecision::Reject
+            } else {
+                // Moderately over → scale premium up
+                ExposureDecision::ScalePremium(excess_ratio)
+            }
+        }
+    }
+
     fn handle_lead_quote_request(
         &mut self,
         risk_id: usize,
@@ -147,8 +182,9 @@ impl Syndicate {
         let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
         let mut price = self.apply_underwriting_markup(actuarial_price);
 
-        // VaR exposure management check
+        // Exposure management: Use VaR EM if enabled (Scenario 3), otherwise use Premium EM (Scenario 1)
         if let Some(ref mut var_em) = self.var_exposure_manager {
+            // VaR-based exposure management (Scenario 3)
             let proposed_exposure = line_size * _risk_limit;
             match var_em.evaluate_quote(_peril_region, proposed_exposure) {
                 ExposureDecision::Accept => {
@@ -160,6 +196,23 @@ impl Syndicate {
                 }
                 ExposureDecision::ScalePremium(factor) => {
                     // Scale premium up to compensate for risk
+                    price *= factor;
+                }
+            }
+        } else {
+            // Premium-based exposure management (Scenario 1)
+            // Only applies when VaR EM is not enabled
+            let proposed_premium = price;
+            match self.check_premium_exposure(proposed_premium) {
+                ExposureDecision::Accept => {
+                    // Proceed with quote
+                }
+                ExposureDecision::Reject => {
+                    // Decline to quote - premium-to-capital ratio too high
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(factor) => {
+                    // Scale premium up to reduce attractiveness
                     price *= factor;
                 }
             }
@@ -1011,6 +1064,108 @@ mod tests {
         assert!(
             resp.is_empty(),
             "Should decline to quote when lead price is very unfavorable (pricing_strength < 0.5)"
+        );
+    }
+
+    #[test]
+    fn test_premium_based_exposure_management() {
+        // Test Scenario 1: Premium-based EM (when VaR EM is disabled)
+        let config = ModelConfig {
+            var_exceedance_prob: 0.0,   // Disable VaR EM → use Premium EM
+            premium_reserve_ratio: 0.5, // Max 50% premium-to-capital ratio
+            ..Default::default()
+        };
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Set capital to a known value
+        syndicate.capital = 10_000_000.0;
+        syndicate.annual_premiums = 0.0;
+
+        // Case 1: Small premium (well within limits)
+        // premium_to_capital = 100k / 10M = 0.01 < 0.5 → Accept
+        let small_premium = 100_000.0;
+        let decision = syndicate.check_premium_exposure(small_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Accept,
+            "Small premium should be accepted"
+        );
+
+        // Case 2: Moderate premium (approaching threshold)
+        // premium_to_capital = 4M / 10M = 0.4 < 0.5 → Accept
+        syndicate.annual_premiums = 0.0;
+        let moderate_premium = 4_000_000.0;
+        let decision = syndicate.check_premium_exposure(moderate_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Accept,
+            "Moderate premium should be accepted"
+        );
+
+        // Case 3: Premium at threshold
+        // premium_to_capital = 5M / 10M = 0.5 = threshold → Accept
+        syndicate.annual_premiums = 0.0;
+        let threshold_premium = 5_000_000.0;
+        let decision = syndicate.check_premium_exposure(threshold_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Accept,
+            "Premium at threshold should be accepted"
+        );
+
+        // Case 4: Premium slightly over threshold
+        // premium_to_capital = 6M / 10M = 0.6 > 0.5 → ScalePremium
+        // excess_ratio = 0.6 / 0.5 = 1.2 < 2.0 → scale by 1.2
+        syndicate.annual_premiums = 0.0;
+        let over_threshold_premium = 6_000_000.0;
+        let decision = syndicate.check_premium_exposure(over_threshold_premium);
+        match decision {
+            ExposureDecision::ScalePremium(factor) => {
+                assert!(factor > 1.0, "Should scale premium up when over threshold");
+                assert!(factor < 2.0, "Scale factor should be less than 2.0");
+            }
+            _ => panic!("Expected ScalePremium decision, got {:?}", decision),
+        }
+
+        // Case 5: Premium far over threshold
+        // premium_to_capital = 11M / 10M = 1.1 > 0.5 → Reject
+        // excess_ratio = 1.1 / 0.5 = 2.2 > 2.0 → Reject
+        syndicate.annual_premiums = 0.0;
+        let far_over_premium = 11_000_000.0;
+        let decision = syndicate.check_premium_exposure(far_over_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Reject,
+            "Premium far over threshold should be rejected"
+        );
+
+        // Case 6: Accumulated premium matters
+        // Already have 3M annual premium, adding 3M more = 6M total
+        // premium_to_capital = 6M / 10M = 0.6 > 0.5 → ScalePremium
+        syndicate.annual_premiums = 3_000_000.0;
+        let additional_premium = 3_000_000.0;
+        let decision = syndicate.check_premium_exposure(additional_premium);
+        match decision {
+            ExposureDecision::ScalePremium(_) => {} // Expected
+            ExposureDecision::Reject => {}          // Also acceptable if ratio is too high
+            _ => panic!("Expected ScalePremium or Reject when accumulated premium is high"),
+        }
+
+        // Case 7: Negative or zero capital
+        syndicate.capital = 0.0;
+        let decision = syndicate.check_premium_exposure(100_000.0);
+        assert_eq!(
+            decision,
+            ExposureDecision::Reject,
+            "Should reject when capital is zero"
+        );
+
+        syndicate.capital = -1_000_000.0;
+        let decision = syndicate.check_premium_exposure(100_000.0);
+        assert_eq!(
+            decision,
+            ExposureDecision::Reject,
+            "Should reject when capital is negative"
         );
     }
 }
