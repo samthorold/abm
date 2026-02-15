@@ -9,6 +9,7 @@ pub mod broker;
 pub mod broker_syndicate_network;
 pub mod catastrophe_loss_generator;
 pub mod central_risk_repository;
+pub mod market_statistics_collector;
 pub mod syndicate;
 pub mod time_generator;
 
@@ -17,6 +18,7 @@ pub use broker::Broker;
 pub use broker_syndicate_network::BrokerSyndicateNetwork;
 pub use catastrophe_loss_generator::CatastropheLossGenerator;
 pub use central_risk_repository::CentralRiskRepository;
+pub use market_statistics_collector::MarketStatisticsCollector;
 pub use syndicate::Syndicate;
 pub use time_generator::TimeGenerator;
 

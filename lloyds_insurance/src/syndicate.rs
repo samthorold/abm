@@ -223,6 +223,21 @@ impl Syndicate {
 
 impl Agent<Event, Stats> for Syndicate {
     fn act(&mut self, current_t: usize, data: &Event) -> Response<Event, Stats> {
+        // Handle Year events even if insolvent (for market statistics reporting)
+        if matches!(data, Event::Year) {
+            self.handle_year_end();
+            self.update_stats();
+
+            // Report capital to market statistics collector
+            return Response::events(vec![(
+                current_t,
+                Event::SyndicateCapitalReported {
+                    syndicate_id: self.syndicate_id,
+                    capital: self.capital,
+                },
+            )]);
+        }
+
         if self.stats.is_insolvent {
             return Response::new();
         }
@@ -264,11 +279,6 @@ impl Agent<Event, Stats> for Syndicate {
                 Response::events(self.handle_claim(*risk_id, *amount))
             }
             Event::Month => {
-                self.update_stats();
-                Response::new()
-            }
-            Event::Year => {
-                self.handle_year_end();
                 self.update_stats();
                 Response::new()
             }

@@ -160,7 +160,13 @@ The `export_time_series_csv` function in `main.rs` writes a single-row-per-syndi
    - Added `total_dividends_paid` to SyndicateStats
    - Added 4 tests: profitable year, loss year, accumulation, event triggering
    - Verified simulation output: syndicates paying dividends ($2.29M, $1.91M, etc.) making capital dynamics realistic
-3. **Populate TimeSeriesStats** from syndicate capital/premium/loss data on Month or Year events — this is where all validation evidence must come from
+3. ✅ **COMPLETED - Populate TimeSeriesStats** from syndicate capital/premium/loss data on Year events
+   - Created `MarketStatisticsCollector` agent to aggregate market snapshots over time
+   - Syndicates emit `SyndicateCapitalReported` events on Year (even when insolvent)
+   - Collector aggregates reports and creates `MarketSnapshot` entries
+   - Updated CSV export to write actual time series data (year, capital, loss ratios, solvency counts)
+   - Added 4 tests for collector behavior
+   - Verified simulation output: 50 annual snapshots showing capital evolution and insolvencies over time
 4. **Consolidate brokers** into a single BrokerPool agent
 5. **Fold BrokerSyndicateNetwork** into Broker or CentralRiskRepository
 6. **Implement underwriting markup** — required for underwriting cycle emergence
