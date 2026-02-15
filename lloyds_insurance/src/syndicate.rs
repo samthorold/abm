@@ -1125,11 +1125,12 @@ mod tests {
         );
 
         // Extract the quoted premium
-        let quoted_premium = if let Some((_, Event::LeadQuoteOffered { price, .. })) = quote_response.first() {
-            *price
-        } else {
-            panic!("Expected LeadQuoteOffered event");
-        };
+        let quoted_premium =
+            if let Some((_, Event::LeadQuoteOffered { price, .. })) = quote_response.first() {
+                *price
+            } else {
+                panic!("Expected LeadQuoteOffered event");
+            };
 
         println!("\n=== Quote Cycle Debug ===");
         println!("Quoted premium: ${:.0}", quoted_premium);
@@ -1147,7 +1148,10 @@ mod tests {
 
         let premium_collected = syndicate.annual_premiums;
         println!("Premium collected: ${:.0}", premium_collected);
-        println!("Capital increase: ${:.0}", syndicate.capital - initial_capital);
+        println!(
+            "Capital increase: ${:.0}",
+            syndicate.capital - initial_capital
+        );
 
         // Verify premium collected matches what was quoted
         assert!(
