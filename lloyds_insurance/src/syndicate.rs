@@ -1,4 +1,7 @@
-use crate::{Event, ModelConfig, PolicyParticipation, Stats, SyndicateStats};
+use crate::{
+    Event, ExposureDecision, ModelConfig, PolicyParticipation, Stats, SyndicateStats,
+    syndicate_var_exposure::VarExposureManager,
+};
 use des::{Agent, Response};
 
 /// Simplified Syndicate agent (Phase 1: Basic actuarial pricing only)
@@ -15,15 +18,43 @@ pub struct Syndicate {
     annual_premiums: f64,
     annual_claims: f64,
     annual_policies_written: usize,
+    annual_claims_count: usize,
 
     // Underwriting markup: exponentially weighted moving average of market conditions
     // m_t captures competitive pressure based on loss experience
     markup_m_t: f64,
+
+    // Dynamic industry statistics (updated annually from MarketStatisticsCollector)
+    // These replace the hardcoded config values for actuarial pricing
+    industry_lambda_t: f64, // Industry-wide claim frequency (claims per policy)
+    industry_mu_t: f64,     // Industry-wide average claim cost
+    years_elapsed: usize,   // Track years for warmup period
+
+    // VaR-based exposure management (optional - enabled based on config)
+    var_exposure_manager: Option<VarExposureManager>,
 }
 
 impl Syndicate {
     pub fn new(syndicate_id: usize, config: ModelConfig) -> Self {
         let initial_capital = config.initial_capital;
+        // Initialize with config defaults until first market stats are available
+        // NOTE: Config values are per-risk, but we interpret them as per-participation initially
+        // This means we assume default lead line size for initialization
+        let industry_lambda_t = config.yearly_claim_frequency; // Claims per participation ≈ claims per risk
+        let industry_mu_t = config.gamma_mean * config.default_lead_line_size; // Avg claim for 50% line
+
+        // Initialize VaR exposure manager if enabled (var_exceedance_prob > 0)
+        let var_exposure_manager = if config.var_exceedance_prob > 0.0 {
+            // Use syndicate_id as seed for deterministic behavior per syndicate
+            Some(VarExposureManager::new(
+                config.clone(),
+                initial_capital,
+                syndicate_id as u64 + 1000,
+            ))
+        } else {
+            None
+        };
+
         Self {
             syndicate_id,
             config,
@@ -35,25 +66,35 @@ impl Syndicate {
             annual_premiums: 0.0,
             annual_claims: 0.0,
             annual_policies_written: 0,
+            annual_claims_count: 0,
             markup_m_t: 0.0, // Start at 0 (no markup, e^0 = 1)
+            industry_lambda_t,
+            industry_mu_t,
+            years_elapsed: 0,
+            var_exposure_manager,
         }
     }
 
-    fn calculate_actuarial_price(&self, _risk_id: usize, industry_avg_loss: f64) -> f64 {
+    fn calculate_actuarial_price(
+        &self,
+        _risk_id: usize,
+        industry_avg_loss_per_participation: f64,
+    ) -> f64 {
         // Simplified actuarial pricing: P̃_t = z·X̄_t + (1-z)·λ'_t·μ'_t
-        // where:
-        // - industry_avg_loss = λ'_t·μ'_t = yearly_claim_frequency × gamma_mean
-        // - loss_history contains CLAIM AMOUNTS (not per-policy losses)
-        // - We need to convert claim amounts to per-policy expected loss by multiplying by frequency
+        //
+        // ALL values are interpreted as PER-PARTICIPATION:
+        // - industry_avg_loss_per_participation = industry_lambda_t × industry_mu_t
+        // - Where industry_mu_t is average claim amount received (line-share adjusted)
+        // - And industry_lambda_t is claim frequency per participation
+        //
+        // This matches how syndicates calculate their own experience (based on participations)
 
         let z = self.config.internal_experience_weight;
-        let line_size = self.config.default_lead_line_size;
         let claim_freq = self.config.yearly_claim_frequency;
 
-        // Syndicate's average CLAIM AMOUNT (from loss_history)
-        // Then multiply by frequency to get expected loss per policy
+        // Syndicate's own experience (expected loss per participation based on own data)
         let syndicate_expected_loss = if !self.loss_history.is_empty() {
-            // Exponentially weighted moving average of CLAIM AMOUNTS
+            // Exponentially weighted moving average of CLAIM AMOUNTS (line-share adjusted)
             let weight = self.config.loss_recency_weight;
             let mut weighted_sum = 0.0;
             let mut total_weight = 0.0;
@@ -63,21 +104,20 @@ impl Syndicate {
                 total_weight += w;
             }
             let avg_claim_amount = weighted_sum / total_weight;
-            // Convert to expected loss per policy: E[loss] = P(claim) × E[amount | claim]
-            // Note: avg_claim_amount is already the syndicate's line share (from loss_history)
+            // Convert to expected loss per participation: E[loss] = P(claim) × E[amount | claim]
             avg_claim_amount * claim_freq
         } else {
-            // No history yet - use industry average
-            industry_avg_loss * line_size
+            // No history yet - use industry average (already per-participation)
+            industry_avg_loss_per_participation
         };
 
-        // Industry expected loss per policy (for our line share)
-        let industry_expected_loss = industry_avg_loss * line_size;
+        // Industry expected loss per participation (use directly)
+        let industry_expected_loss = industry_avg_loss_per_participation;
 
-        // Combine syndicate and industry experience (both are expected loss per policy now)
+        // Combine syndicate and industry experience
         let base_price = z * syndicate_expected_loss + (1.0 - z) * industry_expected_loss;
 
-        // Add volatility loading (simplified - using constant for now)
+        // Add volatility loading
         let volatility_loading = self.config.volatility_weight * base_price;
 
         base_price + volatility_loading
@@ -92,18 +132,91 @@ impl Syndicate {
         actuarial_price * self.markup_m_t.exp()
     }
 
+    /// Premium-based exposure management (Scenario 1)
+    ///
+    /// Simple exposure management using premium-to-capital ratio.
+    /// Returns ExposureDecision based on whether adding the proposed premium
+    /// would exceed the premium_reserve_ratio threshold.
+    fn check_premium_exposure(&self, proposed_premium: f64) -> ExposureDecision {
+        if self.capital <= 0.0 {
+            // No capital → reject
+            return ExposureDecision::Reject;
+        }
+
+        // Calculate premium-to-capital ratio after accepting this quote
+        let proposed_total_premium = self.annual_premiums + proposed_premium;
+        let premium_to_capital_ratio = proposed_total_premium / self.capital;
+
+        // Check against threshold
+        let threshold = self.config.premium_reserve_ratio;
+
+        if premium_to_capital_ratio <= threshold {
+            // Within limits
+            ExposureDecision::Accept
+        } else {
+            // Exceeds threshold - either reject or scale premium up
+            // Scaling premium up makes quote less attractive, reducing our participation
+            let excess_ratio = premium_to_capital_ratio / threshold;
+            if excess_ratio > 2.0 {
+                // Far over threshold → reject
+                ExposureDecision::Reject
+            } else {
+                // Moderately over → scale premium up
+                ExposureDecision::ScalePremium(excess_ratio)
+            }
+        }
+    }
+
     fn handle_lead_quote_request(
         &mut self,
         risk_id: usize,
+        _peril_region: usize,
+        _risk_limit: f64,
         current_t: usize,
     ) -> Vec<(usize, Event)> {
-        // Use default industry average for now (will be updated with real stats later)
-        let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
+        // Use dynamic industry statistics (updated annually from market data)
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
         let line_size = self.config.default_lead_line_size;
 
         // Calculate actuarial price and apply underwriting markup
         let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
-        let price = self.apply_underwriting_markup(actuarial_price);
+        let mut price = self.apply_underwriting_markup(actuarial_price);
+
+        // Exposure management: Use VaR EM if enabled (Scenario 3), otherwise use Premium EM (Scenario 1)
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            // VaR-based exposure management (Scenario 3)
+            let proposed_exposure = line_size * _risk_limit;
+            match var_em.evaluate_quote(_peril_region, proposed_exposure) {
+                ExposureDecision::Accept => {
+                    // Proceed with quote
+                }
+                ExposureDecision::Reject => {
+                    // Decline to quote
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(factor) => {
+                    // Scale premium up to compensate for risk
+                    price *= factor;
+                }
+            }
+        } else {
+            // Premium-based exposure management (Scenario 1)
+            // Only applies when VaR EM is not enabled
+            let proposed_premium = price;
+            match self.check_premium_exposure(proposed_premium) {
+                ExposureDecision::Accept => {
+                    // Proceed with quote
+                }
+                ExposureDecision::Reject => {
+                    // Decline to quote - premium-to-capital ratio too high
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(factor) => {
+                    // Scale premium up to reduce attractiveness
+                    price *= factor;
+                }
+            }
+        }
 
         vec![(
             current_t,
@@ -116,9 +229,9 @@ impl Syndicate {
         )]
     }
 
-    fn handle_lead_accepted(&mut self, risk_id: usize) {
+    fn handle_lead_accepted(&mut self, risk_id: usize, peril_region: usize, risk_limit: f64) {
         // Record premium - must match what we quoted
-        let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
         let line_size = self.config.default_lead_line_size;
 
         // Calculate actuarial price and apply underwriting markup (must match quote)
@@ -129,6 +242,19 @@ impl Syndicate {
         self.premium_history.push(price);
         self.annual_premiums += price;
         self.annual_policies_written += 1;
+
+        // Track exposure by peril region
+        let exposure = line_size * risk_limit;
+        *self
+            .stats
+            .exposure_by_peril_region
+            .entry(peril_region)
+            .or_insert(0.0) += exposure;
+
+        // Record exposure in VaR manager
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            var_em.record_exposure(peril_region, exposure);
+        }
 
         let participation = PolicyParticipation {
             risk_id,
@@ -147,12 +273,62 @@ impl Syndicate {
     fn handle_follow_quote_request(
         &mut self,
         risk_id: usize,
-        _lead_price: f64,
+        lead_price: f64,
+        peril_region: usize,
+        risk_limit: f64,
         current_t: usize,
     ) -> Vec<(usize, Event)> {
-        // Followers accept the lead's price and offer their line size
-        // (In this simplified version, we don't use lead_price for pricing decisions)
-        let line_size = self.config.default_follow_line_size;
+        // Calculate what we think the price should be (our independent assessment)
+        let baseline_line_size = self.config.default_follow_line_size;
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
+        let actuarial_price = self.calculate_actuarial_price(risk_id, industry_avg_loss);
+        let my_price = self.apply_underwriting_markup(actuarial_price);
+
+        // Calculate pricing strength: my_price / lead_price
+        // - pricing_strength > 1.0: Lead price is higher than we think → favorable, offer more
+        // - pricing_strength < 1.0: Lead price is lower than we think → unfavorable, offer less
+        // - pricing_strength < 0.5: Lead price is too low → decline to quote
+        let pricing_strength = if lead_price > 0.0 {
+            my_price / lead_price
+        } else {
+            0.0
+        };
+
+        // Adjust line size based on pricing strength
+        let line_size = if pricing_strength < 0.5 {
+            // Lead price is very unfavorable (more than 2x what we think it should be)
+            // Decline to quote
+            return Vec::new();
+        } else if pricing_strength > 1.0 {
+            // Lead price is favorable (lower than what we would charge)
+            // Offer more, but cap at 2x baseline
+            let scale_factor = pricing_strength.min(2.0);
+            baseline_line_size * scale_factor
+        } else {
+            // Lead price is somewhat unfavorable but acceptable
+            // Scale down proportionally
+            baseline_line_size * pricing_strength
+        };
+
+        // VaR exposure management check
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            let proposed_exposure = line_size * risk_limit;
+            match var_em.evaluate_quote(peril_region, proposed_exposure) {
+                ExposureDecision::Accept => {
+                    // Proceed with quote
+                }
+                ExposureDecision::Reject => {
+                    // Decline to quote
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(_factor) => {
+                    // For followers, we can't scale premium (we accept lead's price)
+                    // Instead, reduce line size to manage exposure
+                    // Decline the quote if VaR suggests scaling
+                    return Vec::new();
+                }
+            }
+        }
 
         vec![(
             current_t,
@@ -164,9 +340,15 @@ impl Syndicate {
         )]
     }
 
-    fn handle_follow_accepted(&mut self, risk_id: usize, line_size: f64) {
+    fn handle_follow_accepted(
+        &mut self,
+        risk_id: usize,
+        line_size: f64,
+        peril_region: usize,
+        risk_limit: f64,
+    ) {
         // Calculate premium for our follow share
-        let industry_avg_loss = self.config.gamma_mean * self.config.yearly_claim_frequency;
+        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
 
         // For followers, we use the same pricing logic but with the follow line size
         // (which is passed in, not the default)
@@ -180,6 +362,19 @@ impl Syndicate {
         self.premium_history.push(price);
         self.annual_premiums += price;
         self.annual_policies_written += 1;
+
+        // Track exposure by peril region
+        let exposure = line_size * risk_limit;
+        *self
+            .stats
+            .exposure_by_peril_region
+            .entry(peril_region)
+            .or_insert(0.0) += exposure;
+
+        // Record exposure in VaR manager
+        if let Some(ref mut var_em) = self.var_exposure_manager {
+            var_em.record_exposure(peril_region, exposure);
+        }
 
         let participation = PolicyParticipation {
             risk_id,
@@ -199,6 +394,7 @@ impl Syndicate {
         self.capital -= amount;
         self.loss_history.push(amount);
         self.annual_claims += amount;
+        self.annual_claims_count += 1;
 
         self.stats.total_claims_paid += amount;
         self.stats.num_claims += 1;
@@ -218,6 +414,9 @@ impl Syndicate {
     }
 
     fn handle_year_end(&mut self) {
+        // Track years for warmup period
+        self.years_elapsed += 1;
+
         // Update underwriting markup BEFORE checking insolvency
         // Even insolvent syndicates update their market view (though they won't quote)
         self.update_underwriting_markup();
@@ -227,6 +426,7 @@ impl Syndicate {
             self.annual_premiums = 0.0;
             self.annual_claims = 0.0;
             self.annual_policies_written = 0;
+            self.annual_claims_count = 0;
             return;
         }
 
@@ -247,6 +447,7 @@ impl Syndicate {
         self.annual_premiums = 0.0;
         self.annual_claims = 0.0;
         self.annual_policies_written = 0;
+        self.annual_claims_count = 0;
     }
 
     fn update_underwriting_markup(&mut self) {
@@ -296,6 +497,7 @@ impl Agent<Event, Stats> for Syndicate {
             let annual_premiums = self.annual_premiums;
             let annual_claims = self.annual_claims;
             let annual_policies_written = self.annual_policies_written;
+            let annual_claims_count = self.annual_claims_count;
 
             self.handle_year_end();
             self.update_stats();
@@ -309,6 +511,7 @@ impl Agent<Event, Stats> for Syndicate {
                     annual_premiums,
                     annual_claims,
                     num_policies: annual_policies_written,
+                    num_claims: annual_claims_count,
                 },
             )]);
         }
@@ -321,29 +524,43 @@ impl Agent<Event, Stats> for Syndicate {
             Event::LeadQuoteRequested {
                 risk_id,
                 syndicate_id,
-            } if *syndicate_id == self.syndicate_id => {
-                Response::events(self.handle_lead_quote_request(*risk_id, current_t))
-            }
+                peril_region,
+                risk_limit,
+            } if *syndicate_id == self.syndicate_id => Response::events(
+                self.handle_lead_quote_request(*risk_id, *peril_region, *risk_limit, current_t),
+            ),
             Event::LeadQuoteAccepted {
                 risk_id,
                 syndicate_id,
+                peril_region,
+                risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                self.handle_lead_accepted(*risk_id);
+                self.handle_lead_accepted(*risk_id, *peril_region, *risk_limit);
                 Response::new()
             }
             Event::FollowQuoteRequested {
                 risk_id,
                 syndicate_id,
                 lead_price,
+                peril_region,
+                risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                Response::events(self.handle_follow_quote_request(*risk_id, *lead_price, current_t))
+                Response::events(self.handle_follow_quote_request(
+                    *risk_id,
+                    *lead_price,
+                    *peril_region,
+                    *risk_limit,
+                    current_t,
+                ))
             }
             Event::FollowQuoteAccepted {
                 risk_id,
                 syndicate_id,
                 line_size,
+                peril_region,
+                risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                self.handle_follow_accepted(*risk_id, *line_size);
+                self.handle_follow_accepted(*risk_id, *line_size, *peril_region, *risk_limit);
                 Response::new()
             }
             Event::ClaimReceived {
@@ -355,6 +572,30 @@ impl Agent<Event, Stats> for Syndicate {
             }
             Event::Month => {
                 self.update_stats();
+                Response::new()
+            }
+            Event::IndustryLossStatsReported {
+                avg_claim_frequency,
+                avg_claim_cost,
+            } => {
+                // Update our view of industry-wide loss statistics using EWMA to smooth noise
+                // Use a warmup period (first 3 years) to avoid early random variation causing mispricing
+
+                // EWMA weight: give more weight to historical values initially to avoid
+                // early year random variation causing systematic mispricing
+                let alpha = if self.years_elapsed == 0 {
+                    0.1 // Year 0: use only 10% of new data (small sample, high variance)
+                } else if self.years_elapsed < 5 {
+                    0.2 // Years 1-4: use 20% of new data, 80% of historical
+                } else {
+                    0.4 // Years 5+: use 40% of new data (more responsive to market changes)
+                };
+
+                // Update with exponential smoothing
+                self.industry_lambda_t =
+                    alpha * avg_claim_frequency + (1.0 - alpha) * self.industry_lambda_t;
+                self.industry_mu_t = alpha * avg_claim_cost + (1.0 - alpha) * self.industry_mu_t;
+
                 Response::new()
             }
             _ => Response::new(),
@@ -375,14 +616,16 @@ mod tests {
         let config = ModelConfig::default();
         let syndicate = Syndicate::new(0, config.clone());
 
-        // With no history, should use industry average scaled by line size
-        let industry_avg = config.gamma_mean * config.yearly_claim_frequency;
-        let line_size = config.default_lead_line_size;
-        let base_price = industry_avg * line_size;
+        // With no history, should use industry average (per-participation)
+        // Syndicate is initialized with per-participation industry stats:
+        // industry_mu_t = gamma_mean × default_lead_line_size = $3M × 0.5 = $1.5M
+        // industry_lambda_t = yearly_claim_frequency = 0.1
+        let industry_avg_per_participation = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let base_price = industry_avg_per_participation; // $150k
         let volatility_loading = config.volatility_weight * base_price;
         let expected_price = base_price + volatility_loading;
 
-        let price = syndicate.calculate_actuarial_price(1, industry_avg);
+        let price = syndicate.calculate_actuarial_price(1, industry_avg_per_participation);
 
         // Price should equal base price plus volatility loading
         // With volatility_weight=0.2: $150k base + $30k loading = $180k
@@ -415,7 +658,7 @@ mod tests {
         let mut syndicate = Syndicate::new(0, config.clone());
         let initial_capital = syndicate.capital;
 
-        syndicate.handle_lead_accepted(1);
+        syndicate.handle_lead_accepted(1, 0, 10_000_000.0);
 
         assert!(syndicate.capital > initial_capital);
         assert_eq!(syndicate.stats.num_policies, 1);
@@ -433,6 +676,8 @@ mod tests {
                 risk_id: 1,
                 syndicate_id: 0,
                 lead_price: 150_000.0,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
             },
         );
 
@@ -464,6 +709,8 @@ mod tests {
                 risk_id: 1,
                 syndicate_id: 0,
                 line_size: 0.1,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
             },
         );
 
@@ -634,7 +881,7 @@ mod tests {
         let mut syndicate = Syndicate::new(0, config.clone());
 
         // Step 1: Quote a price
-        let quote_events = syndicate.handle_lead_quote_request(1, 0);
+        let quote_events = syndicate.handle_lead_quote_request(1, 0, 10_000_000.0, 0);
         let quoted_price = match &quote_events[0].1 {
             Event::LeadQuoteOffered { price, .. } => *price,
             _ => panic!("Expected LeadQuoteOffered event"),
@@ -642,7 +889,7 @@ mod tests {
 
         // Step 2: Accept that quote
         let initial_capital = syndicate.capital;
-        syndicate.handle_lead_accepted(1);
+        syndicate.handle_lead_accepted(1, 0, 10_000_000.0);
 
         // Step 3: Verify the premium collected matches the quoted price
         let premium_collected = syndicate.capital - initial_capital;
@@ -741,6 +988,184 @@ mod tests {
         assert!(
             (low_price / baseline_price).abs() < 1.0,
             "e^-0.5 ≈ 0.606, so price should be ~40% lower"
+        );
+    }
+
+    #[test]
+    fn test_pricing_strength_adjusts_follow_line_size() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        let baseline_line_size = config.default_follow_line_size;
+
+        // Calculate what the syndicate thinks is a fair price
+        let industry_avg_loss = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let actuarial_price = syndicate.calculate_actuarial_price(1, industry_avg_loss);
+        let fair_price = syndicate.apply_underwriting_markup(actuarial_price);
+
+        // Case 1: Lead price is favorable (lower than our assessment)
+        // pricing_strength = our_price / lead_price > 1.0 → offer more
+        let favorable_lead_price = fair_price * 0.5; // Half of what we'd charge
+        let resp =
+            syndicate.handle_follow_quote_request(1, favorable_lead_price, 0, 10_000_000.0, 0);
+        assert!(
+            !resp.is_empty(),
+            "Should quote when lead price is favorable"
+        );
+        if let Event::FollowQuoteOffered { line_size, .. } = &resp[0].1 {
+            assert!(
+                *line_size > baseline_line_size,
+                "Should offer more than baseline when lead price is favorable: {} vs {}",
+                line_size,
+                baseline_line_size
+            );
+        }
+
+        // Case 2: Lead price is at our assessment (pricing_strength ≈ 1.0)
+        let fair_lead_price = fair_price;
+        let resp = syndicate.handle_follow_quote_request(1, fair_lead_price, 0, 10_000_000.0, 0);
+        assert!(!resp.is_empty(), "Should quote when lead price is fair");
+        if let Event::FollowQuoteOffered { line_size, .. } = &resp[0].1 {
+            assert!(
+                (*line_size - baseline_line_size).abs() < 0.01,
+                "Should offer baseline when lead price is fair: {} vs {}",
+                line_size,
+                baseline_line_size
+            );
+        }
+
+        // Case 3: Lead price is somewhat unfavorable (pricing_strength between 0.5 and 1.0)
+        // Should scale down but still quote
+        let unfavorable_lead_price = fair_price * 1.5; // 50% higher than we'd charge
+        let resp =
+            syndicate.handle_follow_quote_request(1, unfavorable_lead_price, 0, 10_000_000.0, 0);
+        assert!(
+            !resp.is_empty(),
+            "Should still quote when lead price is moderately unfavorable"
+        );
+        if let Event::FollowQuoteOffered { line_size, .. } = &resp[0].1 {
+            assert!(
+                *line_size < baseline_line_size,
+                "Should offer less than baseline when lead price is unfavorable: {} vs {}",
+                line_size,
+                baseline_line_size
+            );
+        }
+
+        // Case 4: Lead price is very unfavorable (pricing_strength < 0.5)
+        // Should decline to quote
+        let very_unfavorable_lead_price = fair_price * 3.0; // 3x what we'd charge
+        let resp = syndicate.handle_follow_quote_request(
+            1,
+            very_unfavorable_lead_price,
+            0,
+            10_000_000.0,
+            0,
+        );
+        assert!(
+            resp.is_empty(),
+            "Should decline to quote when lead price is very unfavorable (pricing_strength < 0.5)"
+        );
+    }
+
+    #[test]
+    fn test_premium_based_exposure_management() {
+        // Test Scenario 1: Premium-based EM (when VaR EM is disabled)
+        let config = ModelConfig {
+            var_exceedance_prob: 0.0,   // Disable VaR EM → use Premium EM
+            premium_reserve_ratio: 0.5, // Max 50% premium-to-capital ratio
+            ..Default::default()
+        };
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Set capital to a known value
+        syndicate.capital = 10_000_000.0;
+        syndicate.annual_premiums = 0.0;
+
+        // Case 1: Small premium (well within limits)
+        // premium_to_capital = 100k / 10M = 0.01 < 0.5 → Accept
+        let small_premium = 100_000.0;
+        let decision = syndicate.check_premium_exposure(small_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Accept,
+            "Small premium should be accepted"
+        );
+
+        // Case 2: Moderate premium (approaching threshold)
+        // premium_to_capital = 4M / 10M = 0.4 < 0.5 → Accept
+        syndicate.annual_premiums = 0.0;
+        let moderate_premium = 4_000_000.0;
+        let decision = syndicate.check_premium_exposure(moderate_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Accept,
+            "Moderate premium should be accepted"
+        );
+
+        // Case 3: Premium at threshold
+        // premium_to_capital = 5M / 10M = 0.5 = threshold → Accept
+        syndicate.annual_premiums = 0.0;
+        let threshold_premium = 5_000_000.0;
+        let decision = syndicate.check_premium_exposure(threshold_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Accept,
+            "Premium at threshold should be accepted"
+        );
+
+        // Case 4: Premium slightly over threshold
+        // premium_to_capital = 6M / 10M = 0.6 > 0.5 → ScalePremium
+        // excess_ratio = 0.6 / 0.5 = 1.2 < 2.0 → scale by 1.2
+        syndicate.annual_premiums = 0.0;
+        let over_threshold_premium = 6_000_000.0;
+        let decision = syndicate.check_premium_exposure(over_threshold_premium);
+        match decision {
+            ExposureDecision::ScalePremium(factor) => {
+                assert!(factor > 1.0, "Should scale premium up when over threshold");
+                assert!(factor < 2.0, "Scale factor should be less than 2.0");
+            }
+            _ => panic!("Expected ScalePremium decision, got {:?}", decision),
+        }
+
+        // Case 5: Premium far over threshold
+        // premium_to_capital = 11M / 10M = 1.1 > 0.5 → Reject
+        // excess_ratio = 1.1 / 0.5 = 2.2 > 2.0 → Reject
+        syndicate.annual_premiums = 0.0;
+        let far_over_premium = 11_000_000.0;
+        let decision = syndicate.check_premium_exposure(far_over_premium);
+        assert_eq!(
+            decision,
+            ExposureDecision::Reject,
+            "Premium far over threshold should be rejected"
+        );
+
+        // Case 6: Accumulated premium matters
+        // Already have 3M annual premium, adding 3M more = 6M total
+        // premium_to_capital = 6M / 10M = 0.6 > 0.5 → ScalePremium
+        syndicate.annual_premiums = 3_000_000.0;
+        let additional_premium = 3_000_000.0;
+        let decision = syndicate.check_premium_exposure(additional_premium);
+        match decision {
+            ExposureDecision::ScalePremium(_) => {} // Expected
+            ExposureDecision::Reject => {}          // Also acceptable if ratio is too high
+            _ => panic!("Expected ScalePremium or Reject when accumulated premium is high"),
+        }
+
+        // Case 7: Negative or zero capital
+        syndicate.capital = 0.0;
+        let decision = syndicate.check_premium_exposure(100_000.0);
+        assert_eq!(
+            decision,
+            ExposureDecision::Reject,
+            "Should reject when capital is zero"
+        );
+
+        syndicate.capital = -1_000_000.0;
+        let decision = syndicate.check_premium_exposure(100_000.0);
+        assert_eq!(
+            decision,
+            ExposureDecision::Reject,
+            "Should reject when capital is negative"
         );
     }
 }

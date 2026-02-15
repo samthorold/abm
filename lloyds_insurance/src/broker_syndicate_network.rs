@@ -72,6 +72,8 @@ impl Agent<Event, Stats> for BrokerSyndicateNetwork {
                         Event::LeadQuoteRequested {
                             risk_id: *risk_id,
                             syndicate_id,
+                            peril_region: 0, // Placeholder - deprecated module
+                            risk_limit: 0.0, // Placeholder - deprecated module
                         },
                     ));
                 }
@@ -81,6 +83,7 @@ impl Agent<Event, Stats> for BrokerSyndicateNetwork {
             Event::LeadQuoteAccepted {
                 risk_id,
                 syndicate_id,
+                ..
             } => {
                 // Once lead is selected, request follow quotes
                 let mut events = Vec::new();
@@ -95,6 +98,8 @@ impl Agent<Event, Stats> for BrokerSyndicateNetwork {
                                 risk_id: *risk_id,
                                 syndicate_id: follower_id,
                                 lead_price: 0.0, // Will be filled by repository
+                                peril_region: 0, // Placeholder - deprecated module
+                                risk_limit: 0.0, // Placeholder - deprecated module
                             },
                         ));
                     }
