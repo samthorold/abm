@@ -7,6 +7,7 @@ edition = "2021"
 des = { path = "../des" }
 rand = "0.9"
 rand_distr = "0.5"
+rayon = "1.10"
 
 [dev-dependencies]
 approx = "0.5"

@@ -260,56 +260,103 @@ fn run_parameter_sweep(exp_config: &ExperimentConfig, sweep: &SweepConfig, outpu
         let param_key = format!("{}_{:.3}", sweep.parameter, param_value);
         let param_dir = output_dir.join(&param_key);
 
-        let mut param_outputs = Vec::new();
+        // Run simulations in parallel using des::parallel
+        use des::parallel::run_parallel;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
-        for run_idx in 0..exp_config.experiment.num_runs {
-            let seed = exp_config.experiment.base_seed
-                + (param_idx * exp_config.experiment.num_runs + run_idx) as u64;
+        let completed = Arc::new(AtomicUsize::new(0));
+        let run_start_times = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
-            // Create model config with swept parameter
-            let mut model_config = exp_config.model.to_model_config();
-            apply_parameter_value(&mut model_config, &sweep.parameter, param_value);
+        // Create builder function for parallel execution
+        let results = run_parallel(
+            exp_config.experiment.num_runs,
+            |run_idx| {
+                let seed = exp_config.experiment.base_seed
+                    + (param_idx * exp_config.experiment.num_runs + run_idx) as u64;
 
-            print!(
-                "  Run {}/{} (seed={})... ",
-                run_idx + 1,
+                // Create model config with swept parameter
+                let mut model_config = exp_config.model.to_model_config();
+                apply_parameter_value(&mut model_config, &sweep.parameter, param_value);
+
+                // Record start time
+                run_start_times
+                    .lock()
+                    .unwrap()
+                    .insert(run_idx, Instant::now());
+
+                // Create EventLoop (run_simulation already does this internally)
+                create_simulation_event_loop(&model_config, exp_config.experiment.num_years, seed)
+            },
+            (exp_config.experiment.num_years + 1) * DAYS_PER_YEAR,
+        );
+
+        // Process results and create outputs
+        let param_outputs: Vec<SimulationOutput> = results
+            .into_iter()
+            .enumerate()
+            .filter_map(|(run_idx, result)| match result {
+                Ok(stats) => {
+                    let seed = exp_config.experiment.base_seed
+                        + (param_idx * exp_config.experiment.num_runs + run_idx) as u64;
+
+                    let mut model_config = exp_config.model.to_model_config();
+                    apply_parameter_value(&mut model_config, &sweep.parameter, param_value);
+
+                    let output = SimulationOutput::from_stats(
+                        stats,
+                        &model_config,
+                        seed,
+                        exp_config.experiment.num_years,
+                    );
+
+                    // Save individual run
+                    if exp_config.output.save_summary_stats {
+                        let run_dir = param_dir.join(format!("run_{}", seed));
+                        save_run_output(&output, &run_dir, &exp_config.output);
+                    }
+
+                    // Report progress
+                    let elapsed = run_start_times
+                        .lock()
+                        .unwrap()
+                        .get(&run_idx)
+                        .map(|t| t.elapsed())
+                        .unwrap_or_default();
+                    let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                    println!(
+                        "  Run {}/{} (seed={}) ✓ ({:.1}s) cycles={} period={}",
+                        count,
+                        exp_config.experiment.num_runs,
+                        seed,
+                        elapsed.as_secs_f64(),
+                        output.cycle_metrics.has_cycles,
+                        output
+                            .cycle_metrics
+                            .cycle_period
+                            .map(|p| format!("{:.1}yr", p))
+                            .unwrap_or_else(|| "N/A".to_string())
+                    );
+
+                    Some(output)
+                }
+                Err(e) => {
+                    let seed = exp_config.experiment.base_seed
+                        + (param_idx * exp_config.experiment.num_runs + run_idx) as u64;
+                    eprintln!("  Warning: Run with seed={} failed: {}", seed, e);
+                    None
+                }
+            })
+            .collect();
+
+        if param_outputs.len() < exp_config.experiment.num_runs {
+            eprintln!(
+                "  Warning: {}/{} runs failed for {}={}",
+                exp_config.experiment.num_runs - param_outputs.len(),
                 exp_config.experiment.num_runs,
-                seed
+                sweep.parameter,
+                param_value
             );
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
-
-            let run_start = Instant::now();
-
-            // Run simulation
-            let stats = run_simulation(&model_config, exp_config.experiment.num_years, seed);
-
-            // Convert to output
-            let output = SimulationOutput::from_stats(
-                stats,
-                &model_config,
-                seed,
-                exp_config.experiment.num_years,
-            );
-
-            // Save individual run
-            if exp_config.output.save_summary_stats {
-                let run_dir = param_dir.join(format!("run_{}", seed));
-                save_run_output(&output, &run_dir, &exp_config.output);
-            }
-
-            let elapsed = run_start.elapsed();
-            println!(
-                "✓ ({:.1}s) cycles={} period={}",
-                elapsed.as_secs_f64(),
-                output.cycle_metrics.has_cycles,
-                output
-                    .cycle_metrics
-                    .cycle_period
-                    .map(|p| format!("{:.1}yr", p))
-                    .unwrap_or_else(|| "N/A".to_string())
-            );
-
-            param_outputs.push(output);
         }
 
         // Aggregate stats for this parameter value
@@ -345,8 +392,12 @@ fn run_parameter_sweep(exp_config: &ExperimentConfig, sweep: &SweepConfig, outpu
     println!("Results saved to: {}", output_dir.display());
 }
 
-/// Run a single simulation
-fn run_simulation(config: &ModelConfig, num_years: usize, seed: u64) -> Vec<Stats> {
+/// Create simulation EventLoop (for parallel execution)
+fn create_simulation_event_loop(
+    config: &ModelConfig,
+    num_years: usize,
+    seed: u64,
+) -> EventLoop<Event, Stats> {
     let mut setup_rng = StdRng::seed_from_u64(seed);
 
     // Create customers
@@ -394,11 +445,14 @@ fn run_simulation(config: &ModelConfig, num_years: usize, seed: u64) -> Vec<Stat
         initial_events.push((time, Event::YearStart { year }));
     }
 
-    // Run simulation
-    let mut event_loop: EventLoop<Event, Stats> = EventLoop::new(initial_events, agents);
+    EventLoop::new(initial_events, agents)
+}
+
+/// Run a single simulation (wrapper for backwards compatibility)
+fn run_simulation(config: &ModelConfig, num_years: usize, seed: u64) -> Vec<Stats> {
+    let mut event_loop = create_simulation_event_loop(config, num_years, seed);
     let max_time = (num_years + 1) * DAYS_PER_YEAR;
     event_loop.run(max_time);
-
     event_loop.stats()
 }
 

@@ -112,14 +112,60 @@ fn run_experiment(
     trader_type: TraderType,
     num_sessions: usize,
 ) -> AggregateResults {
-    let mut sessions = Vec::new();
+    // Note: Cannot use des::parallel::run_parallel() here because run_session()
+    // creates multiple EventLoops sequentially (one per trading period), which doesn't
+    // fit ParallelRunner's Fn(usize) -> EventLoop signature. The architecture is:
+    // run_session → multiple run_period calls → each creates its own EventLoop
+    //
+    // Using rayon directly with panic isolation to match des::parallel's safety guarantees.
+    use rayon::prelude::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    for session_id in 0..num_sessions {
-        if session_id % 100 == 0 && session_id > 0 {
-            println!("  Completed {}/{} sessions", session_id, num_sessions);
-        }
-        let results = run_session(market_config, trader_type, session_id);
-        sessions.push(results);
+    // Progress reporting
+    let completed = Arc::new(AtomicUsize::new(0));
+
+    // Run sessions in parallel with panic isolation
+    let results: Vec<Result<SessionResults, String>> = (0..num_sessions)
+        .into_par_iter()
+        .map(|session_id| {
+            // Catch panics to prevent one bad session from crashing the entire experiment
+            catch_unwind(AssertUnwindSafe(|| {
+                run_session(market_config, trader_type, session_id)
+            }))
+            .inspect(|_| {
+                // Update progress on success
+                let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                if count.is_multiple_of(100) {
+                    println!("  Completed {}/{} sessions", count, num_sessions);
+                }
+            })
+            .map_err(|e| {
+                eprintln!("  Session {} panicked: {:?}", session_id, e);
+                format!("Panic in session {}", session_id)
+            })
+        })
+        .collect();
+
+    // Filter successful sessions and report failures
+    let sessions: Vec<SessionResults> = results
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(session) => Some(session),
+            Err(e) => {
+                eprintln!("  Warning: Skipping failed session - {}", e);
+                None
+            }
+        })
+        .collect();
+
+    if sessions.len() < num_sessions {
+        eprintln!(
+            "  Warning: {}/{} sessions failed",
+            num_sessions - sessions.len(),
+            num_sessions
+        );
     }
 
     AggregateResults::from_sessions(&sessions)
