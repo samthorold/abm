@@ -260,61 +260,92 @@ fn run_parameter_sweep(exp_config: &ExperimentConfig, sweep: &SweepConfig, outpu
         let param_key = format!("{}_{:.3}", sweep.parameter, param_value);
         let param_dir = output_dir.join(&param_key);
 
-        // Run simulations in parallel
+        // Run simulations in parallel with panic isolation
         use rayon::prelude::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
         let completed = Arc::new(AtomicUsize::new(0));
 
-        let param_outputs: Vec<SimulationOutput> = (0..exp_config.experiment.num_runs)
+        let results: Vec<Result<SimulationOutput, String>> = (0..exp_config.experiment.num_runs)
             .into_par_iter()
             .map(|run_idx| {
                 let seed = exp_config.experiment.base_seed
                     + (param_idx * exp_config.experiment.num_runs + run_idx) as u64;
 
-                // Create model config with swept parameter
-                let mut model_config = exp_config.model.to_model_config();
-                apply_parameter_value(&mut model_config, &sweep.parameter, param_value);
+                // Catch panics to prevent one bad seed from crashing the entire batch
+                catch_unwind(AssertUnwindSafe(|| {
+                    // Create model config with swept parameter
+                    let mut model_config = exp_config.model.to_model_config();
+                    apply_parameter_value(&mut model_config, &sweep.parameter, param_value);
 
-                let run_start = Instant::now();
+                    let run_start = Instant::now();
 
-                // Run simulation
-                let stats = run_simulation(&model_config, exp_config.experiment.num_years, seed);
+                    // Run simulation
+                    let stats =
+                        run_simulation(&model_config, exp_config.experiment.num_years, seed);
 
-                // Convert to output
-                let output = SimulationOutput::from_stats(
-                    stats,
-                    &model_config,
-                    seed,
-                    exp_config.experiment.num_years,
-                );
+                    // Convert to output
+                    let output = SimulationOutput::from_stats(
+                        stats,
+                        &model_config,
+                        seed,
+                        exp_config.experiment.num_years,
+                    );
 
-                // Save individual run
-                if exp_config.output.save_summary_stats {
-                    let run_dir = param_dir.join(format!("run_{}", seed));
-                    save_run_output(&output, &run_dir, &exp_config.output);
-                }
+                    // Save individual run
+                    if exp_config.output.save_summary_stats {
+                        let run_dir = param_dir.join(format!("run_{}", seed));
+                        save_run_output(&output, &run_dir, &exp_config.output);
+                    }
 
-                let elapsed = run_start.elapsed();
-                let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
-                println!(
-                    "  Run {}/{} (seed={}) ✓ ({:.1}s) cycles={} period={}",
-                    count,
-                    exp_config.experiment.num_runs,
-                    seed,
-                    elapsed.as_secs_f64(),
-                    output.cycle_metrics.has_cycles,
+                    let elapsed = run_start.elapsed();
+                    let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                    println!(
+                        "  Run {}/{} (seed={}) ✓ ({:.1}s) cycles={} period={}",
+                        count,
+                        exp_config.experiment.num_runs,
+                        seed,
+                        elapsed.as_secs_f64(),
+                        output.cycle_metrics.has_cycles,
+                        output
+                            .cycle_metrics
+                            .cycle_period
+                            .map(|p| format!("{:.1}yr", p))
+                            .unwrap_or_else(|| "N/A".to_string())
+                    );
+
                     output
-                        .cycle_metrics
-                        .cycle_period
-                        .map(|p| format!("{:.1}yr", p))
-                        .unwrap_or_else(|| "N/A".to_string())
-                );
-
-                output
+                }))
+                .map_err(|e| {
+                    eprintln!("  Run with seed={} panicked: {:?}", seed, e);
+                    format!("Panic in run with seed {}", seed)
+                })
             })
             .collect();
+
+        // Filter successful runs and report failures
+        let param_outputs: Vec<SimulationOutput> = results
+            .into_iter()
+            .filter_map(|r| match r {
+                Ok(output) => Some(output),
+                Err(e) => {
+                    eprintln!("  Warning: Skipping failed run - {}", e);
+                    None
+                }
+            })
+            .collect();
+
+        if param_outputs.len() < exp_config.experiment.num_runs {
+            eprintln!(
+                "  Warning: {}/{} runs failed for {}={}",
+                exp_config.experiment.num_runs - param_outputs.len(),
+                exp_config.experiment.num_runs,
+                sweep.parameter,
+                param_value
+            );
+        }
 
         // Aggregate stats for this parameter value
         let aggregate = compute_aggregate_metrics(&param_outputs);

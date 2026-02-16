@@ -113,27 +113,54 @@ fn run_experiment(
     num_sessions: usize,
 ) -> AggregateResults {
     use rayon::prelude::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     // Progress reporting
     let completed = Arc::new(AtomicUsize::new(0));
 
-    // Run sessions in parallel
-    let sessions: Vec<SessionResults> = (0..num_sessions)
+    // Run sessions in parallel with panic isolation
+    let results: Vec<Result<SessionResults, String>> = (0..num_sessions)
         .into_par_iter()
         .map(|session_id| {
-            let result = run_session(market_config, trader_type, session_id);
-
-            // Update progress
-            let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
-            if count.is_multiple_of(100) {
-                println!("  Completed {}/{} sessions", count, num_sessions);
-            }
-
-            result
+            // Catch panics to prevent one bad session from crashing the entire experiment
+            catch_unwind(AssertUnwindSafe(|| {
+                run_session(market_config, trader_type, session_id)
+            }))
+            .inspect(|_| {
+                // Update progress on success
+                let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                if count.is_multiple_of(100) {
+                    println!("  Completed {}/{} sessions", count, num_sessions);
+                }
+            })
+            .map_err(|e| {
+                eprintln!("  Session {} panicked: {:?}", session_id, e);
+                format!("Panic in session {}", session_id)
+            })
         })
         .collect();
+
+    // Filter successful sessions and report failures
+    let sessions: Vec<SessionResults> = results
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(session) => Some(session),
+            Err(e) => {
+                eprintln!("  Warning: Skipping failed session - {}", e);
+                None
+            }
+        })
+        .collect();
+
+    if sessions.len() < num_sessions {
+        eprintln!(
+            "  Warning: {}/{} sessions failed",
+            num_sessions - sessions.len(),
+            num_sessions
+        );
+    }
 
     AggregateResults::from_sessions(&sessions)
 }
