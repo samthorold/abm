@@ -10,11 +10,12 @@ fn run_experiment(
     iterations: usize,
     num_sessions: usize,
 ) -> Vec<f64> {
+    // Note: Cannot use des::parallel here for same reason as main.rs
     use rayon::prelude::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     // Run sessions in parallel with panic isolation
-    let efficiencies: Vec<f64> = (0..num_sessions)
+    let results: Vec<Result<f64, String>> = (0..num_sessions)
         .into_par_iter()
         .map(|session| {
             // Catch panics to prevent one bad session from crashing the entire experiment
@@ -113,12 +114,32 @@ fn run_experiment(
                     0.0 // Default efficiency if no coordinator stats found
                 }
             }))
-            .unwrap_or_else(|e| {
+            .map_err(|e| {
                 eprintln!("  Session {} panicked: {:?}", session, e);
-                0.0 // Use 0.0 efficiency for failed sessions
+                format!("Panic in session {}", session)
             })
         })
         .collect();
+
+    // Filter successful sessions (failed sessions are excluded from analysis)
+    let efficiencies: Vec<f64> = results
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(eff) => Some(eff),
+            Err(e) => {
+                eprintln!("  Warning: Skipping failed session - {}", e);
+                None
+            }
+        })
+        .collect();
+
+    if efficiencies.len() < num_sessions {
+        eprintln!(
+            "  Warning: {}/{} sessions failed",
+            num_sessions - efficiencies.len(),
+            num_sessions
+        );
+    }
 
     efficiencies
 }

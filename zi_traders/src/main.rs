@@ -112,6 +112,12 @@ fn run_experiment(
     trader_type: TraderType,
     num_sessions: usize,
 ) -> AggregateResults {
+    // Note: Cannot use des::parallel::run_parallel() here because run_session()
+    // creates multiple EventLoops sequentially (one per trading period), which doesn't
+    // fit ParallelRunner's Fn(usize) -> EventLoop signature. The architecture is:
+    // run_session → multiple run_period calls → each creates its own EventLoop
+    //
+    // Using rayon directly with panic isolation to match des::parallel's safety guarantees.
     use rayon::prelude::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicUsize, Ordering};
