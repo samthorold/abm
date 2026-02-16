@@ -482,7 +482,9 @@ impl Syndicate {
         // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
         // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
         //
-        // Note: EWMA smoothing (β=0.2) provides temporal stability
+        // CRITICAL FIX: Add warmup period to prevent Year 1 pricing collapse
+        // Match the warmup logic used for industry stats updates (lines 628-634)
+        // This prevents early random variation from causing catastrophic mispricing
 
         let current_year_loss_ratio = if self.annual_premiums > 0.0 {
             Some(self.annual_claims / self.annual_premiums)
@@ -493,9 +495,19 @@ impl Syndicate {
         // Update markup using current year's loss ratio (per paper specification)
         if let Some(loss_ratio) = current_year_loss_ratio {
             let signal = loss_ratio.ln(); // log(loss_ratio)
-            let beta = self.config.underwriter_recency_weight;
 
-            // EWMA update
+            // WARMUP PERIOD: Reduce sensitivity to early random variation
+            // Give more weight to historical values initially to avoid
+            // early year random variation causing systematic mispricing
+            let beta = if self.years_elapsed == 0 {
+                0.9 // Year 0: use only 10% of new signal (high stability)
+            } else if self.years_elapsed < 5 {
+                0.8 // Years 1-4: use 20% of new signal (moderate stability)
+            } else {
+                self.config.underwriter_recency_weight // Years 5+: use config value (20% → 80% new signal)
+            };
+
+            // EWMA update with warmup-adjusted beta
             self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
         }
 
@@ -958,8 +970,8 @@ mod tests {
 
         // Initial markup is 0.0 (fair pricing)
         syndicate.markup_m_t = 0.0;
-        // Skip warmup period (need years_elapsed >= 3)
-        syndicate.years_elapsed = 3;
+        // Skip warmup period (need years_elapsed >= 5 after fix)
+        syndicate.years_elapsed = 5;
 
         // Simulate a high-loss year: loss_ratio = 2.0
         syndicate.annual_premiums = 1_000_000.0;
@@ -990,8 +1002,8 @@ mod tests {
 
         // Start with some positive markup
         syndicate.markup_m_t = 0.5;
-        // Skip warmup period (need years_elapsed >= 3)
-        syndicate.years_elapsed = 3;
+        // Skip warmup period (need years_elapsed >= 5 after fix)
+        syndicate.years_elapsed = 5;
 
         // Manually set prior year to trigger update (normally this comes from history)
         syndicate.prior_year_loss_ratio = Some(0.5);
@@ -1383,6 +1395,243 @@ mod tests {
             decision,
             ExposureDecision::Reject,
             "Should reject when capital is negative"
+        );
+    }
+
+    // ========================================================================
+    // PRICING STABILITY TESTS (diagnose Year 1-2 pricing collapse)
+    // ========================================================================
+
+    #[test]
+    fn test_warmup_period_year_0_markup_stability() {
+        // Verify Year 0 markup adjustment is dampened (10% weight on new signal)
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Year 0: profitable year (loss_ratio = 0.5)
+        syndicate.years_elapsed = 0;
+        syndicate.markup_m_t = 0.0;
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 500_000.0;
+
+        syndicate.update_underwriting_markup();
+
+        // Expected: beta=0.9, so markup = 0.9 * 0 + 0.1 * ln(0.5) = 0.1 * (-0.693) = -0.0693
+        let expected_markup = 0.1 * (0.5_f64).ln();
+
+        assert!(
+            (syndicate.markup_m_t - expected_markup).abs() < 0.001,
+            "Year 0 markup should be {:.4} (10% weight), got {:.4}",
+            expected_markup,
+            syndicate.markup_m_t
+        );
+
+        // Should be small negative (dampened response)
+        assert!(
+            syndicate.markup_m_t > -0.1,
+            "Year 0 markup should be dampened: {:.4} > -0.1",
+            syndicate.markup_m_t
+        );
+    }
+
+    #[test]
+    fn test_warmup_prevents_year_1_premium_collapse() {
+        // Simulate Year 0 profitable → Year 1 markup adjustment
+        // Without warmup: markup goes from 0 → -0.5, premium drops 39%
+        // With warmup: markup goes from 0 → -0.07, premium drops only 7%
+
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config.clone());
+
+        // Year 0: profitable (loss_ratio = 0.54, like real data)
+        syndicate.years_elapsed = 0;
+        syndicate.markup_m_t = 0.0;
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 540_000.0;
+
+        syndicate.update_underwriting_markup();
+
+        let year0_markup = syndicate.markup_m_t;
+
+        // Premium multiplier: exp(markup)
+        let premium_multiplier = year0_markup.exp();
+
+        println!("\n=== Warmup Prevents Premium Collapse ===");
+        println!("Year 0 loss ratio: 0.54");
+        println!("Year 0 markup (with warmup): {:.4}", year0_markup);
+        println!("Year 1 premium multiplier: {:.4}", premium_multiplier);
+        println!(
+            "Year 1 premium change: {:.1}%",
+            (premium_multiplier - 1.0) * 100.0
+        );
+
+        // With warmup (10% weight): markup = 0.1 * ln(0.54) = -0.062
+        // Premium change = exp(-0.062) - 1 = -6% (acceptable)
+        assert!(
+            premium_multiplier > 0.9,
+            "Premium should not drop >10% in Year 1 with warmup: {:.1}% drop",
+            (1.0 - premium_multiplier) * 100.0
+        );
+
+        // Without warmup (80% weight): markup = 0.8 * ln(0.54) = -0.493
+        // Premium change = exp(-0.493) - 1 = -39% (catastrophic!)
+        let without_warmup_markup = 0.8 * (0.54_f64).ln();
+        let without_warmup_multiplier = without_warmup_markup.exp();
+
+        println!("WITHOUT warmup:");
+        println!("  Markup: {:.4}", without_warmup_markup);
+        println!("  Premium multiplier: {:.4}", without_warmup_multiplier);
+        println!(
+            "  Premium change: {:.1}%\n",
+            (without_warmup_multiplier - 1.0) * 100.0
+        );
+
+        assert!(
+            without_warmup_multiplier < 0.65,
+            "Without warmup, premium drops >35%"
+        );
+    }
+
+    #[test]
+    fn test_scenario_3_volatility_buffer_increases_premiums() {
+        // Verify Scenario 3 has 50% volatility buffer (vs 20% default)
+        let config_default = ModelConfig::default();
+        let config_s3 = ModelConfig::scenario_3();
+
+        assert_eq!(
+            config_default.volatility_weight, 0.2,
+            "Default should be 20%"
+        );
+        assert_eq!(config_s3.volatility_weight, 0.5, "Scenario 3 should be 50%");
+
+        // Calculate premiums with both configs
+        let syndicate_default = Syndicate::new(0, config_default);
+        let syndicate_s3 = Syndicate::new(0, config_s3);
+
+        let industry_avg = 150_000.0; // 0.1 * $1.5M
+        let price_default = syndicate_default.calculate_actuarial_price(1, industry_avg);
+        let price_s3 = syndicate_s3.calculate_actuarial_price(1, industry_avg);
+
+        println!("\n=== Volatility Buffer Comparison ===");
+        println!("Default (20%): ${:.0}", price_default);
+        println!("Scenario 3 (50%): ${:.0}", price_s3);
+        println!(
+            "Increase: {:.1}%\n",
+            (price_s3 / price_default - 1.0) * 100.0
+        );
+
+        // Scenario 3 should have 25% higher premiums
+        // Default: $150k * 1.2 = $180k
+        // Scenario 3: $150k * 1.5 = $225k
+        // Increase: $225k / $180k = 1.25 (25% higher)
+        assert!(
+            (price_s3 / price_default - 1.25).abs() < 0.01,
+            "Scenario 3 should have 25% higher premiums: {:.1}%",
+            (price_s3 / price_default - 1.0) * 100.0
+        );
+    }
+
+    #[test]
+    fn test_reduced_dividends_preserve_capital() {
+        // Verify Scenario 3 reduced dividends from 40% → 20%
+        let config_default = ModelConfig::default();
+        let config_s3 = ModelConfig::scenario_3();
+
+        assert_eq!(config_default.profit_fraction, 0.4, "Default should be 40%");
+        assert_eq!(config_s3.profit_fraction, 0.2, "Scenario 3 should be 20%");
+
+        // Simulate profitable year
+        let mut syndicate = Syndicate::new(0, config_s3.clone());
+        let initial_capital = syndicate.capital;
+
+        syndicate.annual_premiums = 1_000_000.0;
+        syndicate.annual_claims = 600_000.0; // $400k profit
+
+        syndicate.handle_year_end();
+
+        // Dividend = 0.2 * $400k = $80k
+        let expected_dividend = 0.2 * 400_000.0;
+        let expected_capital = initial_capital - expected_dividend;
+
+        assert_eq!(
+            syndicate.stats.total_dividends_paid, expected_dividend,
+            "Should pay 20% dividend (not 40%)"
+        );
+
+        assert_eq!(
+            syndicate.capital, expected_capital,
+            "Should retain 80% of profit as capital buffer"
+        );
+
+        println!("\n=== Reduced Dividends Test ===");
+        println!("Profit: $400k");
+        println!("Dividend (20%): $80k");
+        println!("Retained: $320k (80%)");
+        println!(
+            "Capital: ${:.2}M → ${:.2}M\n",
+            initial_capital / 1_000_000.0,
+            syndicate.capital / 1_000_000.0
+        );
+    }
+
+    #[test]
+    fn test_loss_ratio_realistic_with_50_percent_buffer() {
+        // Simulate realistic portfolio with 50% volatility buffer
+        // Expected: loss ratio should average ~0.67 (1 / 1.5)
+        use rand::{Rng, SeedableRng};
+        use rand_distr::{Distribution, Gamma};
+
+        let config = ModelConfig::scenario_3();
+        let mut syndicate = Syndicate::new(0, config.clone());
+        syndicate.years_elapsed = 5; // Skip warmup
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let shape = 1.0 / (config.gamma_cov * config.gamma_cov);
+        let scale = config.gamma_mean * config.gamma_cov * config.gamma_cov;
+        let gamma = Gamma::new(shape, scale).unwrap();
+
+        let num_policies = 2000;
+        let line_size = config.default_lead_line_size;
+
+        // Write policies
+        for i in 0..num_policies {
+            syndicate.handle_lead_accepted(i, 0, config.risk_limit);
+        }
+
+        let total_premiums = syndicate.annual_premiums;
+
+        // Generate claims
+        let mut total_claims = 0.0;
+        for i in 0..num_policies {
+            if rng.gen_range(0.0..1.0) < config.yearly_claim_frequency {
+                let claim_amount = gamma.sample(&mut rng).min(config.risk_limit);
+                let syndicate_share = claim_amount * line_size;
+                syndicate.handle_claim(i, syndicate_share);
+                total_claims += syndicate_share;
+            }
+        }
+
+        let loss_ratio = total_claims / total_premiums;
+
+        println!("\n=== Loss Ratio with 50% Buffer ===");
+        println!("Policies: {}", num_policies);
+        println!("Premiums: ${:.2}M", total_premiums / 1_000_000.0);
+        println!("Claims: ${:.2}M", total_claims / 1_000_000.0);
+        println!("Loss ratio: {:.4}", loss_ratio);
+        println!("Expected: ~0.67 (1/1.5)");
+
+        // With 50% buffer, loss ratio should be profitable (<1.0)
+        assert!(
+            loss_ratio < 1.0,
+            "Loss ratio {:.4} should be <1.0 (profitable) with 50% buffer",
+            loss_ratio
+        );
+
+        // Should average around 0.67 (±0.15 due to randomness)
+        assert!(
+            loss_ratio > 0.5 && loss_ratio < 0.85,
+            "Loss ratio {:.4} should be 0.5-0.85 range with 50% buffer",
+            loss_ratio
         );
     }
 }

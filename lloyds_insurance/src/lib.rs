@@ -512,6 +512,11 @@ impl ModelConfig {
     pub fn scenario_2() -> Self {
         Self {
             mean_cat_events_per_year: 0.05, // Enable catastrophes
+            // FIX: Increase volatility buffer for catastrophe exposure
+            // Default 20% is insufficient; catastrophes can cause 10-20x expected loss
+            volatility_weight: 0.5, // 50% safety margin (up from 20%)
+            // FIX: Reduce dividend payout to preserve capital buffer
+            profit_fraction: 0.2, // 20% payout (down from 40%)
             ..Self::default()
         }
     }
@@ -525,6 +530,10 @@ impl ModelConfig {
             // Trade-off: Slightly higher exposure concentration (uniform_deviation ~0.09 vs 0.08)
             // Tested: 0.4 (too tight), 0.6 (marginal), 0.7 (optimal), 1.0 (too loose)
             var_safety_factor: 0.7,
+            // FIX: Increase volatility buffer for catastrophe exposure
+            volatility_weight: 0.5, // 50% safety margin (up from 20%)
+            // FIX: Reduce dividend payout to preserve capital buffer
+            profit_fraction: 0.2, // 20% payout (down from 40%)
             ..Self::default()
         }
     }
