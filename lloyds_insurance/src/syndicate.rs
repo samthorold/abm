@@ -125,8 +125,26 @@ impl Syndicate {
         // Combine syndicate and industry experience
         let base_price = z * syndicate_expected_loss + (1.0 - z) * industry_expected_loss;
 
-        // Add volatility loading
-        let volatility_loading = self.config.volatility_weight * base_price;
+        // Add volatility loading: F_t = EWMA-weighted std dev of loss history (Paper Eq 2)
+        // P_at = P̃_t + α·F_t  where F_t is the std deviation of claims, not the mean
+        let f_t = if !self.loss_history.is_empty() {
+            let weight = self.config.loss_recency_weight;
+            let mut weighted_sum = 0.0;
+            let mut weighted_sq_sum = 0.0;
+            let mut total_weight = 0.0;
+            for (i, &loss) in self.loss_history.iter().rev().enumerate() {
+                let w = (1.0 - weight).powi(i as i32);
+                weighted_sum += loss * w;
+                weighted_sq_sum += loss * loss * w;
+                total_weight += w;
+            }
+            let mean = weighted_sum / total_weight;
+            let variance = (weighted_sq_sum / total_weight) - mean * mean;
+            variance.max(0.0).sqrt() // guard against floating-point negative
+        } else {
+            0.0 // no history → no variance estimate → no volatility loading
+        };
+        let volatility_loading = self.config.volatility_weight * f_t;
 
         base_price + volatility_loading
     }
@@ -353,19 +371,13 @@ impl Syndicate {
         &mut self,
         risk_id: usize,
         line_size: f64,
+        lead_price: f64,
         peril_region: usize,
         risk_limit: f64,
     ) {
-        // Calculate premium for our follow share
-        let industry_avg_loss = self.industry_mu_t * self.industry_lambda_t;
-
-        // For followers, we use the same pricing logic but with the follow line size
-        // (which is passed in, not the default)
-        let full_risk_actuarial = self.calculate_actuarial_price(risk_id, industry_avg_loss);
-        let full_risk_price = self.apply_underwriting_markup(full_risk_actuarial);
-
-        // Adjust for the actual line size allocated (may be less than requested)
-        let price = (full_risk_price / self.config.default_lead_line_size) * line_size;
+        // Paper Section 4.3.4: followers collect the lead's price scaled to their line share.
+        // lead_price is quoted for default_lead_line_size (50%); scale to our allocated line.
+        let price = (lead_price / self.config.default_lead_line_size) * line_size;
 
         self.capital += price;
         self.premium_history.push(price);
@@ -611,10 +623,17 @@ impl Agent<Event, Stats> for Syndicate {
                 risk_id,
                 syndicate_id,
                 line_size,
+                lead_price,
                 peril_region,
                 risk_limit,
             } if *syndicate_id == self.syndicate_id => {
-                self.handle_follow_accepted(*risk_id, *line_size, *peril_region, *risk_limit);
+                self.handle_follow_accepted(
+                    *risk_id,
+                    *line_size,
+                    *lead_price,
+                    *peril_region,
+                    *risk_limit,
+                );
                 Response::new()
             }
             Event::ClaimReceived {
@@ -675,20 +694,16 @@ mod tests {
         // industry_mu_t = gamma_mean × default_lead_line_size = $3M × 0.5 = $1.5M
         // industry_lambda_t = yearly_claim_frequency = 0.1
         let industry_avg_per_participation = syndicate.industry_mu_t * syndicate.industry_lambda_t;
-        let base_price = industry_avg_per_participation; // $150k
-        let volatility_loading = config.volatility_weight * base_price;
-        let expected_price = base_price + volatility_loading;
+        // Paper Eq 2: volatility loading uses std dev (F_t). With no loss history, F_t = 0.
+        let expected_price = industry_avg_per_participation; // $150k, no volatility loading
 
         let price = syndicate.calculate_actuarial_price(1, industry_avg_per_participation);
 
-        // Price should equal base price plus volatility loading
-        // With volatility_weight=0.2: $150k base + $30k loading = $180k
+        // With no history, f_t = 0 → no volatility loading → price = base = $150k
         assert!(
             (price - expected_price).abs() < 1.0,
-            "Expected ${:.0} (base ${:.0} + loading ${:.0}), got ${:.0}",
+            "Expected ${:.0} (base price, no history → f_t=0), got ${:.0}",
             expected_price,
-            base_price,
-            volatility_loading,
             price
         );
     }
@@ -763,6 +778,7 @@ mod tests {
                 risk_id: 1,
                 syndicate_id: 0,
                 line_size: 0.1,
+                lead_price: 150_000.0,
                 peril_region: 0,
                 risk_limit: 10_000_000.0,
             },
@@ -1089,13 +1105,14 @@ mod tests {
             "Expected loss per participation should be $150k"
         );
 
-        // Calculate actuarial price (should add 20% volatility loading)
+        // Calculate actuarial price
+        // Paper Eq 2: P_at = P̃_t + α·F_t, where F_t = std dev of loss_history.
+        // With no loss history, F_t = 0 → no volatility loading → price = base = $150k.
         let actuarial_price = syndicate.calculate_actuarial_price(1, industry_avg_loss);
 
-        // Base: $150k, +20% volatility = $180k
         assert!(
-            (actuarial_price - 180_000.0).abs() < 1_000.0,
-            "Actuarial price should be ~$180k (base + 20% volatility), got ${:.0}",
+            (actuarial_price - 150_000.0).abs() < 1_000.0,
+            "Actuarial price should be ~$150k (base price, no history → F_t=0), got ${:.0}",
             actuarial_price
         );
 
@@ -1140,10 +1157,10 @@ mod tests {
         println!("\n=== Quote Cycle Debug ===");
         println!("Quoted premium: ${:.0}", quoted_premium);
 
-        // Expected: ~$180k (actuarial price with 20% volatility loading, m_t=0.0)
+        // Expected: ~$150k (actuarial fair price, no loss history → F_t=0, m_t=0.0)
         assert!(
-            (quoted_premium - 180_000.0).abs() < 5_000.0,
-            "Quoted premium should be ~$180k, got ${:.0}",
+            (quoted_premium - 150_000.0).abs() < 5_000.0,
+            "Quoted premium should be ~$150k (fair price, no history), got ${:.0}",
             quoted_premium
         );
 
@@ -1494,40 +1511,48 @@ mod tests {
 
     #[test]
     fn test_scenario_3_volatility_buffer_increases_premiums() {
-        // Verify Scenario 3 has 50% volatility buffer (vs 20% default)
+        // Verify Scenario 3 (α=0.5) produces higher premiums than Default (α=0.0)
+        // when there is variance in the loss history.
+        // Paper Eq 2: P_at = P̃_t + α·F_t; higher α → larger loading when F_t > 0.
         let config_default = ModelConfig::default();
         let config_s3 = ModelConfig::scenario_3();
 
         assert_eq!(
-            config_default.volatility_weight, 0.2,
-            "Default should be 20%"
+            config_default.volatility_weight, 0.0,
+            "Default should be 0 (paper Table 13/14: α=0 for all scenarios)"
         );
         assert_eq!(config_s3.volatility_weight, 0.5, "Scenario 3 should be 50%");
 
-        // Calculate premiums with both configs
-        let syndicate_default = Syndicate::new(0, config_default);
-        let syndicate_s3 = Syndicate::new(0, config_s3);
+        // Pre-populate the same variable loss history for both syndicates.
+        // With variance in loss history, F_t > 0, so Scenario 3's higher α
+        // produces a larger loading than Default's α=0.
+        let history = vec![1_000_000.0, 3_000_000.0, 4_280_000.0]; // same mean, σ > 0
+
+        let mut syndicate_default = Syndicate::new(0, config_default);
+        syndicate_default.loss_history = history.clone();
+
+        let mut syndicate_s3 = Syndicate::new(0, config_s3);
+        syndicate_s3.loss_history = history;
 
         let industry_avg = 150_000.0; // 0.1 * $1.5M
         let price_default = syndicate_default.calculate_actuarial_price(1, industry_avg);
         let price_s3 = syndicate_s3.calculate_actuarial_price(1, industry_avg);
 
         println!("\n=== Volatility Buffer Comparison ===");
-        println!("Default (20%): ${:.0}", price_default);
-        println!("Scenario 3 (50%): ${:.0}", price_s3);
+        println!("Default (α=0): ${:.0}", price_default);
+        println!("Scenario 3 (α=0.5): ${:.0}", price_s3);
         println!(
             "Increase: {:.1}%\n",
             (price_s3 / price_default - 1.0) * 100.0
         );
 
-        // Scenario 3 should have 25% higher premiums
-        // Default: $150k * 1.2 = $180k
-        // Scenario 3: $150k * 1.5 = $225k
-        // Increase: $225k / $180k = 1.25 (25% higher)
+        // Scenario 3 (α=0.5) should have higher premiums than Default (α=0.0)
         assert!(
-            (price_s3 / price_default - 1.25).abs() < 0.01,
-            "Scenario 3 should have 25% higher premiums: {:.1}%",
-            (price_s3 / price_default - 1.0) * 100.0
+            price_s3 > price_default,
+            "Scenario 3 (α=0.5) should produce higher premiums than Default (α=0). \
+             Default=${:.0}, Scenario3=${:.0}",
+            price_default,
+            price_s3
         );
     }
 
@@ -1618,19 +1643,19 @@ mod tests {
         println!("Premiums: ${:.2}M", total_premiums / 1_000_000.0);
         println!("Claims: ${:.2}M", total_claims / 1_000_000.0);
         println!("Loss ratio: {:.4}", loss_ratio);
-        println!("Expected: ~0.67 (1/1.5)");
+        println!("Expected: ~1.0 (no prior history → F_t=0 → premiums at fair price)");
 
-        // With 50% buffer, loss ratio should be profitable (<1.0)
+        // Paper Eq 2: volatility buffer requires prior loss history with variance (F_t > 0).
+        // In year 1 (no history), premiums = actuarial fair price → expected loss ratio ≈ 1.0.
+        // Portfolio should remain profitable (loss_ratio < 1.0) within a reasonable band.
         assert!(
-            loss_ratio < 1.0,
-            "Loss ratio {:.4} should be <1.0 (profitable) with 50% buffer",
+            loss_ratio < 1.1,
+            "Loss ratio {:.4} should be near 1.0 (fair pricing) with no prior history",
             loss_ratio
         );
-
-        // Should average around 0.67 (±0.15 due to randomness)
         assert!(
-            loss_ratio > 0.5 && loss_ratio < 0.85,
-            "Loss ratio {:.4} should be 0.5-0.85 range with 50% buffer",
+            loss_ratio > 0.5,
+            "Loss ratio {:.4} should be >0.5 (claims can't exceed 2× fair premiums by chance)",
             loss_ratio
         );
     }
@@ -1671,10 +1696,9 @@ mod tests {
     }
 
     #[test]
-    fn test_a2_volatility_loading_ignores_claim_variance() {
-        // Discrepancy D1: Paper Eq 2 uses F_t = std dev of claims for volatility loading.
-        // Implementation uses α × E[loss] (proportional to mean, not variance).
-        // Two syndicates with same EWMA mean but different variance get same price.
+    fn test_a2_volatility_loading_uses_claim_std_dev() {
+        // Paper Eq 2: P_at = P̃_t + α·F_t where F_t = std dev of claims (not mean).
+        // Two syndicates with same EWMA mean but different variance should get different prices.
         let config = ModelConfig {
             volatility_weight: 0.2,
             ..Default::default()
@@ -1695,13 +1719,12 @@ mod tests {
         let price_a = syndicate_a.calculate_actuarial_price(1, industry_avg);
         let price_b = syndicate_b.calculate_actuarial_price(1, industry_avg);
 
-        // NOTE: Paper formula (Eq 2) uses F_t = std dev of claims, so price_B > price_A.
-        // Implementation uses volatility_weight × base_price (proportional to mean),
-        // making prices identical regardless of claim variance.
+        // Paper formula (Eq 2): F_t = std dev of claims → syndicate B (higher variance)
+        // charges more than A (zero variance), even though both have the same EWMA mean.
         assert!(
-            (price_a - price_b).abs() < 1.0,
-            "Implementation: same mean → same price regardless of variance. \
-             Paper would give price_B > price_A. Got A=${:.0}, B=${:.0}",
+            price_b > price_a,
+            "Syndicate B (higher variance) should price higher than A (zero variance). \
+             Got A=${:.0}, B=${:.0}",
             price_a,
             price_b
         );
@@ -1873,30 +1896,35 @@ mod tests {
     // --- Category C: Fair Price and Calibration Discrepancies ---
 
     #[test]
-    fn test_c1_default_config_inflates_premiums_20_percent_over_paper() {
-        // Discrepancy D2: Paper Table 13/14 sets α=0 for all scenarios.
-        // Implementation default α=0.2 inflates premiums by 20%.
-        let config_impl = ModelConfig::default(); // volatility_weight = 0.2
+    fn test_c1_default_config_matches_paper_alpha() {
+        // Paper Table 13/14: α=0 for all four scenarios.
+        // Default config should match the paper (no volatility inflation).
+        let config_default = ModelConfig::default(); // volatility_weight should be 0.0
+
+        assert_eq!(
+            config_default.volatility_weight, 0.0,
+            "Default volatility_weight should be 0.0 (paper Table 13/14: α=0)"
+        );
+
+        // With α=0, default and explicit paper config produce the same price
         let config_paper = ModelConfig {
             volatility_weight: 0.0,
             ..Default::default()
         };
 
-        let syndicate_impl = Syndicate::new(0, config_impl);
+        let syndicate_default = Syndicate::new(0, config_default);
         let syndicate_paper = Syndicate::new(1, config_paper);
 
-        let industry_avg = syndicate_impl.industry_mu_t * syndicate_impl.industry_lambda_t;
-        let price_impl = syndicate_impl.calculate_actuarial_price(1, industry_avg);
+        let industry_avg = syndicate_default.industry_mu_t * syndicate_default.industry_lambda_t;
+        let price_default = syndicate_default.calculate_actuarial_price(1, industry_avg);
         let price_paper = syndicate_paper.calculate_actuarial_price(1, industry_avg);
 
-        let ratio = price_impl / price_paper;
-
-        // NOTE: Paper Table 13/14 sets α=0 for all scenarios.
-        // Implementation default α=0.2 produces a 20% premium inflation.
+        let ratio = price_default / price_paper;
         assert!(
-            (ratio - 1.20).abs() < 0.01,
-            "Implementation inflates premiums by {:.1}% over paper baseline (expected 20%)",
-            (ratio - 1.0) * 100.0
+            (ratio - 1.0).abs() < 0.01,
+            "Default config should produce the same price as paper config (α=0). \
+             Got ratio={:.3}",
+            ratio
         );
     }
 
@@ -1933,9 +1961,10 @@ mod tests {
     // --- Category D: Market Structure ---
 
     #[test]
-    fn test_d1_follow_premium_independent_of_lead_price() {
-        // Discrepancy D3: Paper says followers accept lead's terms (same price).
-        // Implementation: each follower calculates its own price independently.
+    fn test_d1_follow_premium_uses_lead_price() {
+        // Paper Section 4.3.4: followers collect the lead's price scaled to their line share.
+        // Two syndicates with different own markups should still charge the same premium
+        // because both use the lead price, not their own independent pricing.
         let config = ModelConfig::default();
 
         // Two syndicates with different markups
@@ -1946,31 +1975,44 @@ mod tests {
         syndicate_b.markup_m_t = 0.5; // aggressive
 
         let follow_line_size = 0.1;
+        let lead_price = 150_000.0; // lead's quoted price for its 50% line
         let peril_region = 0;
         let risk_limit = 10_000_000.0;
 
-        // Both accept same follow allocation for same risk
+        // Both accept same follow allocation with the same lead price
         let capital_before_a = syndicate_a.capital;
-        syndicate_a.handle_follow_accepted(1, follow_line_size, peril_region, risk_limit);
+        syndicate_a.handle_follow_accepted(
+            1,
+            follow_line_size,
+            lead_price,
+            peril_region,
+            risk_limit,
+        );
         let premium_a = syndicate_a.capital - capital_before_a;
 
         let capital_before_b = syndicate_b.capital;
-        syndicate_b.handle_follow_accepted(1, follow_line_size, peril_region, risk_limit);
+        syndicate_b.handle_follow_accepted(
+            1,
+            follow_line_size,
+            lead_price,
+            peril_region,
+            risk_limit,
+        );
         let premium_b = syndicate_b.capital - capital_before_b;
 
-        // NOTE: Paper says followers accept the lead's terms (same price).
-        // Implementation: each follower calculates its own price independently.
-        // Syndicate B (higher markup) charges more than Syndicate A.
+        // Paper: followers use lead price scaled to their line.
+        // Expected: (150_000 / 0.5) * 0.1 = 30_000 for both syndicates.
+        let expected_premium = (lead_price / config.default_lead_line_size) * follow_line_size;
         assert!(
-            (premium_b - premium_a).abs() > 1_000.0,
-            "Follower premiums should differ based on own markup (proving lead price is ignored). \
-             A=${:.0}, B=${:.0}",
-            premium_a,
-            premium_b
+            (premium_a - expected_premium).abs() < 1.0,
+            "Syndicate A premium should equal lead-scaled price ${:.0}, got ${:.0}",
+            expected_premium,
+            premium_a
         );
         assert!(
-            premium_b > premium_a,
-            "Syndicate B (markup=0.5) should charge more than A (markup=0.0). A=${:.0}, B=${:.0}",
+            (premium_b - premium_a).abs() < 1.0,
+            "Both followers should charge the same premium (lead price). \
+             A=${:.0}, B=${:.0}",
             premium_a,
             premium_b
         );

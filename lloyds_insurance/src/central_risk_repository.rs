@@ -152,6 +152,7 @@ impl CentralRiskRepository {
 
         // Check if policy exists (lead selected)
         if let Some(policy) = self.policies.get(&risk_id) {
+            let lead_price = policy.lead_price;
             let mut remaining_line = 1.0 - policy.lead_line_size;
 
             if let Some(quotes) = self.follow_quotes.get(&risk_id) {
@@ -175,6 +176,7 @@ impl CentralRiskRepository {
                             risk_id,
                             syndicate_id: quote.syndicate_id,
                             line_size: allocated_line,
+                            lead_price,
                             peril_region: risk.peril_region,
                             risk_limit: risk.limit,
                         },

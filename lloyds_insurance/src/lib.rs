@@ -102,6 +102,7 @@ pub enum Event {
         risk_id: usize,
         syndicate_id: usize,
         line_size: f64,
+        lead_price: f64,
         peril_region: usize,
         risk_limit: f64,
     },
@@ -479,7 +480,7 @@ impl Default for ModelConfig {
             // Actuarial pricing
             internal_experience_weight: 0.5,
             loss_recency_weight: 0.2,
-            volatility_weight: 0.2, // Add 20% safety margin for claim volatility
+            volatility_weight: 0.0, // Paper Table 13/14: α=0 for all scenarios
 
             // Underwriting
             underwriter_recency_weight: 0.2,
@@ -1252,8 +1253,8 @@ mod tests {
             let expected_lead_premium = expected_loss_per_risk * config.default_lead_line_size;
             let expected_with_loading = expected_lead_premium * (1.0 + config.volatility_weight);
             println!(
-                "\nTheoretical fair price: ${:.0} (with 20% loading)",
-                expected_with_loading
+                "\nTheoretical fair price: ${:.0} (volatility_weight={:.1})",
+                expected_with_loading, config.volatility_weight
             );
 
             // Assertion: Later period average premium should be within ±50% of fair price
