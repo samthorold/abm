@@ -1634,4 +1634,386 @@ mod tests {
             loss_ratio
         );
     }
+
+    // ========================================================================
+    // ACTUARIAL PRICING CORRECTNESS & DISCREPANCY TESTS
+    // ========================================================================
+    //
+    // These tests verify the actuarial pricing formula against the paper
+    // (Olmez et al., 2024) and document known discrepancies between the
+    // implementation and the paper's specification.
+    //
+    // Discrepancy-documenting tests (A2, C1, D1) PASS — they assert the
+    // implementation's actual behaviour with NOTE comments explaining where
+    // the paper differs. They serve as regression tests.
+
+    // --- Category A: Actuarial Formula Structure ---
+
+    #[test]
+    fn test_a1_zero_volatility_produces_expected_loss() {
+        // With volatility_weight=0, price should equal pure expected loss
+        // Paper Table 13/14: α=0 for all four scenarios
+        let config = ModelConfig {
+            volatility_weight: 0.0,
+            ..Default::default()
+        };
+        let syndicate = Syndicate::new(0, config);
+
+        // industry_avg_per_participation = 0.1 × ($3M × 0.5) = $150k
+        let industry_avg = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let price = syndicate.calculate_actuarial_price(1, industry_avg);
+
+        assert!(
+            (price - 150_000.0).abs() < 1.0,
+            "With α=0, price should equal expected loss $150k, got ${:.2}",
+            price
+        );
+    }
+
+    #[test]
+    fn test_a2_volatility_loading_ignores_claim_variance() {
+        // Discrepancy D1: Paper Eq 2 uses F_t = std dev of claims for volatility loading.
+        // Implementation uses α × E[loss] (proportional to mean, not variance).
+        // Two syndicates with same EWMA mean but different variance get same price.
+        let config = ModelConfig {
+            volatility_weight: 0.2,
+            ..Default::default()
+        };
+
+        // Syndicate A: constant claims (σ ≈ 0)
+        let mut syndicate_a = Syndicate::new(0, config.clone());
+        syndicate_a.loss_history = vec![3_000_000.0, 3_000_000.0, 3_000_000.0];
+
+        // Syndicate B: variable claims, SAME recency-weighted mean
+        // EWMA for [3M,3M,3M] = (3M×1.0 + 3M×0.8 + 3M×0.64) / 2.44 = 3M
+        // Need c + 0.8b + 0.64a = 7.32M with b=3M → c + 0.64a = 4.92M
+        // Choose a=1M → c=4.28M: [1M, 3M, 4.28M] has same EWMA but σ > 0
+        let mut syndicate_b = Syndicate::new(1, config.clone());
+        syndicate_b.loss_history = vec![1_000_000.0, 3_000_000.0, 4_280_000.0];
+
+        let industry_avg = syndicate_a.industry_mu_t * syndicate_a.industry_lambda_t;
+        let price_a = syndicate_a.calculate_actuarial_price(1, industry_avg);
+        let price_b = syndicate_b.calculate_actuarial_price(1, industry_avg);
+
+        // NOTE: Paper formula (Eq 2) uses F_t = std dev of claims, so price_B > price_A.
+        // Implementation uses volatility_weight × base_price (proportional to mean),
+        // making prices identical regardless of claim variance.
+        assert!(
+            (price_a - price_b).abs() < 1.0,
+            "Implementation: same mean → same price regardless of variance. \
+             Paper would give price_B > price_A. Got A=${:.0}, B=${:.0}",
+            price_a,
+            price_b
+        );
+    }
+
+    #[test]
+    fn test_a3_ewma_loss_history_formula() {
+        // Verify EWMA weighted average computation with known values
+        let config = ModelConfig {
+            volatility_weight: 0.0,          // isolate base price
+            internal_experience_weight: 1.0, // use only syndicate experience
+            loss_recency_weight: 0.2,
+            ..Default::default()
+        };
+        let mut syndicate = Syndicate::new(0, config);
+        syndicate.loss_history = vec![1_000_000.0, 2_000_000.0, 3_000_000.0]; // oldest first
+
+        // Manual EWMA calculation (iterating newest first):
+        // i=0: w=(1-0.2)^0 = 1.0,  3M × 1.0  = 3.00M, total_w = 1.00
+        // i=1: w=(1-0.2)^1 = 0.8,  2M × 0.8  = 1.60M, total_w = 1.80
+        // i=2: w=(1-0.2)^2 = 0.64, 1M × 0.64 = 0.64M, total_w = 2.44
+        // avg_claim = 5.24M / 2.44 ≈ 2,147,541
+        // syndicate_expected_loss = 2,147,541 × 0.1 ≈ 214,754
+
+        let industry_avg = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let price = syndicate.calculate_actuarial_price(1, industry_avg);
+
+        let expected = 5_240_000.0 / 2.44 * 0.1;
+        assert!(
+            (price - expected).abs() / expected < 0.01,
+            "EWMA price should be ≈${:.0}, got ${:.0} (error {:.2}%)",
+            expected,
+            price,
+            (price - expected).abs() / expected * 100.0
+        );
+    }
+
+    #[test]
+    fn test_a4_z_weight_blends_syndicate_and_industry() {
+        // With loss history, z blends syndicate and industry expected loss
+        // P̃_t = z·X̄_t + (1-z)·λ'·μ'
+        let config = ModelConfig {
+            volatility_weight: 0.0,
+            internal_experience_weight: 0.5,
+            ..Default::default()
+        };
+        let mut syndicate = Syndicate::new(0, config);
+
+        // Uniform history: EWMA = exactly $2M
+        syndicate.loss_history = vec![2_000_000.0, 2_000_000.0, 2_000_000.0];
+        // syndicate_expected_loss = 2M × 0.1 = $200k
+
+        // Override industry stats so industry_avg = $100k
+        syndicate.industry_mu_t = 1_000_000.0;
+        syndicate.industry_lambda_t = 0.1;
+        let industry_avg = 100_000.0;
+
+        let price = syndicate.calculate_actuarial_price(1, industry_avg);
+
+        // z=0.5: price = 0.5 × $200k + 0.5 × $100k = $150k
+        assert!(
+            (price - 150_000.0).abs() < 1.0,
+            "z-blended price should be $150k (0.5×200k + 0.5×100k), got ${:.0}",
+            price
+        );
+    }
+
+    // --- Category B: Underwriting Markup ---
+
+    #[test]
+    fn test_b1_markup_increases_after_loss_year_warmup() {
+        // Year 0 warmup: β=0.9, only 10% signal weight
+        // LR=2.0 → signal=ln(2.0)≈0.693
+        // m_t = 0.9×0 + 0.1×0.693 = 0.0693
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config);
+
+        syndicate.years_elapsed = 0;
+        syndicate.markup_m_t = 0.0;
+        syndicate.annual_premiums = 100_000.0;
+        syndicate.annual_claims = 200_000.0;
+
+        syndicate.update_underwriting_markup();
+
+        let expected = 0.1 * (2.0_f64).ln(); // ≈ 0.0693
+        assert!(
+            (syndicate.markup_m_t - expected).abs() < 0.001,
+            "Year 0 markup should be {:.4} (10% of ln(2)), got {:.4}",
+            expected,
+            syndicate.markup_m_t
+        );
+
+        // Verify premium multiplier
+        let multiplier = syndicate.apply_underwriting_markup(1.0);
+        let expected_multiplier = expected.exp(); // ≈ 1.072
+        assert!(
+            (multiplier - expected_multiplier).abs() < 0.001,
+            "Premium multiplier should be {:.4}, got {:.4}",
+            expected_multiplier,
+            multiplier
+        );
+    }
+
+    #[test]
+    fn test_b3_breakeven_loss_ratio_produces_zero_signal() {
+        // LR=1.0 → signal=ln(1.0)=0.0 → markup decays toward 0
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config);
+
+        let prior_markup = 0.3;
+        syndicate.markup_m_t = prior_markup;
+        syndicate.years_elapsed = 5; // post-warmup: beta = config value = 0.2
+        syndicate.annual_premiums = 100_000.0;
+        syndicate.annual_claims = 100_000.0; // LR = 1.0
+
+        syndicate.update_underwriting_markup();
+
+        // signal = ln(1.0) = 0.0
+        // m_t = 0.2 × 0.3 + 0.8 × 0.0 = 0.06
+        let expected = 0.2 * prior_markup;
+        assert!(
+            (syndicate.markup_m_t - expected).abs() < 0.0001,
+            "With LR=1.0 (zero signal), markup should decay toward 0. Expected {:.4}, got {:.4}",
+            expected,
+            syndicate.markup_m_t
+        );
+    }
+
+    #[test]
+    fn test_b4_markup_ewma_sequence_post_warmup() {
+        // Two successive year-end triggers with known LR values
+        // Post-warmup: beta = underwriter_recency_weight = 0.2
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config);
+
+        syndicate.markup_m_t = 0.0;
+        syndicate.years_elapsed = 5;
+
+        // Year 5: LR = 2.0
+        syndicate.annual_premiums = 100_000.0;
+        syndicate.annual_claims = 200_000.0;
+        syndicate.update_underwriting_markup();
+
+        // m_5 = 0.2 × 0 + 0.8 × ln(2.0) ≈ 0.5545
+        let expected_m5 = 0.8 * (2.0_f64).ln();
+        assert!(
+            (syndicate.markup_m_t - expected_m5).abs() < 0.001,
+            "After year 5 (LR=2.0): expected m_t={:.4}, got {:.4}",
+            expected_m5,
+            syndicate.markup_m_t
+        );
+
+        // Year 6: LR = 0.5
+        syndicate.years_elapsed = 6;
+        syndicate.annual_premiums = 100_000.0;
+        syndicate.annual_claims = 50_000.0;
+        syndicate.update_underwriting_markup();
+
+        // m_6 = 0.2 × 0.5545 + 0.8 × ln(0.5) ≈ -0.4436
+        let expected_m6 = 0.2 * expected_m5 + 0.8 * (0.5_f64).ln();
+        assert!(
+            (syndicate.markup_m_t - expected_m6).abs() < 0.001,
+            "After year 6 (LR=0.5): expected m_t={:.4}, got {:.4}",
+            expected_m6,
+            syndicate.markup_m_t
+        );
+    }
+
+    // --- Category C: Fair Price and Calibration Discrepancies ---
+
+    #[test]
+    fn test_c1_default_config_inflates_premiums_20_percent_over_paper() {
+        // Discrepancy D2: Paper Table 13/14 sets α=0 for all scenarios.
+        // Implementation default α=0.2 inflates premiums by 20%.
+        let config_impl = ModelConfig::default(); // volatility_weight = 0.2
+        let config_paper = ModelConfig {
+            volatility_weight: 0.0,
+            ..Default::default()
+        };
+
+        let syndicate_impl = Syndicate::new(0, config_impl);
+        let syndicate_paper = Syndicate::new(1, config_paper);
+
+        let industry_avg = syndicate_impl.industry_mu_t * syndicate_impl.industry_lambda_t;
+        let price_impl = syndicate_impl.calculate_actuarial_price(1, industry_avg);
+        let price_paper = syndicate_paper.calculate_actuarial_price(1, industry_avg);
+
+        let ratio = price_impl / price_paper;
+
+        // NOTE: Paper Table 13/14 sets α=0 for all scenarios.
+        // Implementation default α=0.2 produces a 20% premium inflation.
+        assert!(
+            (ratio - 1.20).abs() < 0.01,
+            "Implementation inflates premiums by {:.1}% over paper baseline (expected 20%)",
+            (ratio - 1.0) * 100.0
+        );
+    }
+
+    #[test]
+    fn test_c2_paper_fair_price_is_full_risk_expected_loss() {
+        // Paper Section 4.5: fair price = λ × μ = 0.1 × $3M = $300k (full risk)
+        // Per 50% lead participation: $150k
+        let config = ModelConfig {
+            volatility_weight: 0.0,
+            ..Default::default()
+        };
+        let syndicate = Syndicate::new(0, config.clone());
+
+        // Full risk expected loss
+        let full_risk_expected_loss = config.yearly_claim_frequency * config.gamma_mean;
+        assert!(
+            (full_risk_expected_loss - 300_000.0).abs() < 1.0,
+            "Paper fair price should be $300k (λ×μ), got ${:.0}",
+            full_risk_expected_loss
+        );
+
+        // Per lead participation (50% line), with no history and α=0
+        let industry_avg = syndicate.industry_mu_t * syndicate.industry_lambda_t;
+        let price = syndicate.calculate_actuarial_price(1, industry_avg);
+
+        // With no history, both z terms equal industry_avg → price = industry_avg = $150k
+        assert!(
+            (price - 150_000.0).abs() < 1.0,
+            "Per-participation actuarial price should be $150k (50%% of $300k), got ${:.0}",
+            price
+        );
+    }
+
+    // --- Category D: Market Structure ---
+
+    #[test]
+    fn test_d1_follow_premium_independent_of_lead_price() {
+        // Discrepancy D3: Paper says followers accept lead's terms (same price).
+        // Implementation: each follower calculates its own price independently.
+        let config = ModelConfig::default();
+
+        // Two syndicates with different markups
+        let mut syndicate_a = Syndicate::new(0, config.clone());
+        syndicate_a.markup_m_t = 0.0; // neutral
+
+        let mut syndicate_b = Syndicate::new(1, config.clone());
+        syndicate_b.markup_m_t = 0.5; // aggressive
+
+        let follow_line_size = 0.1;
+        let peril_region = 0;
+        let risk_limit = 10_000_000.0;
+
+        // Both accept same follow allocation for same risk
+        let capital_before_a = syndicate_a.capital;
+        syndicate_a.handle_follow_accepted(1, follow_line_size, peril_region, risk_limit);
+        let premium_a = syndicate_a.capital - capital_before_a;
+
+        let capital_before_b = syndicate_b.capital;
+        syndicate_b.handle_follow_accepted(1, follow_line_size, peril_region, risk_limit);
+        let premium_b = syndicate_b.capital - capital_before_b;
+
+        // NOTE: Paper says followers accept the lead's terms (same price).
+        // Implementation: each follower calculates its own price independently.
+        // Syndicate B (higher markup) charges more than Syndicate A.
+        assert!(
+            (premium_b - premium_a).abs() > 1_000.0,
+            "Follower premiums should differ based on own markup (proving lead price is ignored). \
+             A=${:.0}, B=${:.0}",
+            premium_a,
+            premium_b
+        );
+        assert!(
+            premium_b > premium_a,
+            "Syndicate B (markup=0.5) should charge more than A (markup=0.0). A=${:.0}, B=${:.0}",
+            premium_a,
+            premium_b
+        );
+    }
+
+    #[test]
+    fn test_d4_insolvent_syndicate_cannot_quote() {
+        let config = ModelConfig::default();
+        let mut syndicate = Syndicate::new(0, config);
+
+        // Make insolvent
+        syndicate.stats.is_insolvent = true;
+        syndicate.capital = -100_000.0;
+
+        // Lead quote request (via act which checks insolvency)
+        let resp = syndicate.act(
+            0,
+            &Event::LeadQuoteRequested {
+                risk_id: 1,
+                syndicate_id: 0,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
+            },
+        );
+        assert!(
+            resp.events.is_empty(),
+            "Insolvent syndicate should not offer lead quotes"
+        );
+
+        // Follow quote request
+        let resp = syndicate.act(
+            0,
+            &Event::FollowQuoteRequested {
+                risk_id: 2,
+                syndicate_id: 0,
+                lead_price: 150_000.0,
+                peril_region: 0,
+                risk_limit: 10_000_000.0,
+            },
+        );
+        assert!(
+            resp.events.is_empty(),
+            "Insolvent syndicate should not offer follow quotes"
+        );
+    }
 }

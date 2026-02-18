@@ -465,6 +465,31 @@ mod tests {
     }
 
     #[test]
+    fn test_lead_selection_picks_cheapest_from_three_quotes() {
+        // D3: Lead selection picks cheapest quote from 3 syndicates
+        let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
+        repo.register_risk(1, 0, 10_000_000.0, 0);
+
+        repo.register_lead_quote(1, 0, 200_000.0, 0.5);
+        repo.register_lead_quote(1, 1, 150_000.0, 0.5); // Cheapest
+        repo.register_lead_quote(1, 2, 250_000.0, 0.5);
+
+        let events = repo.select_lead(1, 0);
+        assert_eq!(events.len(), 1);
+
+        match &events[0].1 {
+            Event::LeadQuoteAccepted { syndicate_id, .. } => {
+                assert_eq!(
+                    *syndicate_id, 1,
+                    "Should select cheapest quote (syndicate 1 at $150k)"
+                );
+            }
+            _ => panic!("Expected LeadQuoteAccepted event"),
+        }
+    }
+
+    #[test]
     fn test_responds_to_lead_quote_accepted_with_follow_requests() {
         let config = ModelConfig::default();
         let mut repo = CentralRiskRepository::new(config, 5, 12345);
