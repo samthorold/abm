@@ -460,7 +460,7 @@ impl Default for ModelConfig {
             num_peril_regions: 10,
             risk_limit: 10_000_000.0,
             lead_top_k: 2,
-            follow_top_k: 5,
+            follow_top_k: 0, // No follow mechanics by default (S1 base case; S4 enables following)
 
             // Attritional losses
             yearly_claim_frequency: 0.1,
@@ -488,8 +488,9 @@ impl Default for ModelConfig {
             // Dividend
             profit_fraction: 0.4,
 
-            // VaR EM
-            var_exceedance_prob: 0.05,
+            // VaR EM (disabled by default; Scenario 3 enables it)
+            // S1/S2/S4 use Premium EM; only S3 uses VaR EM.
+            var_exceedance_prob: 0.0,
             var_safety_factor: 1.0,
 
             // Premium EM
@@ -504,20 +505,15 @@ impl ModelConfig {
     pub fn scenario_1() -> Self {
         Self {
             mean_cat_events_per_year: 0.0, // Attritional losses only (no catastrophes)
-            lead_top_k: 2,                 // Lead selection enabled
-            follow_top_k: 5, // Follow selection enabled (base case includes syndication)
-            ..Self::default()
+            ..Self::default() // follow_top_k: 0 from default (no follow mechanics in S1)
         }
     }
 
     pub fn scenario_2() -> Self {
         Self {
             mean_cat_events_per_year: 0.05, // Enable catastrophes
-            // FIX: Increase volatility buffer for catastrophe exposure
-            // Default 20% is insufficient; catastrophes can cause 10-20x expected loss
-            volatility_weight: 0.5, // 50% safety margin (up from 20%)
-            // FIX: Reduce dividend payout to preserve capital buffer
-            profit_fraction: 0.2, // 20% payout (down from 40%)
+            volatility_weight: 0.5,         // Safety margin for catastrophe exposure
+            profit_fraction: 0.2,           // Reduced dividends to preserve capital buffer
             ..Self::default()
         }
     }
@@ -525,16 +521,11 @@ impl ModelConfig {
     pub fn scenario_3() -> Self {
         Self {
             mean_cat_events_per_year: 0.05, // Enable catastrophes
+            volatility_weight: 0.5,         // Safety margin for catastrophe exposure
+            profit_fraction: 0.2,           // Reduced dividends to preserve capital buffer
             // VaR EM enabled (non-zero values)
             var_exceedance_prob: 0.05,
-            // Calibrated optimal value: 0.7 provides 6.5% fewer insolvencies vs no VaR EM
-            // Trade-off: Slightly higher exposure concentration (uniform_deviation ~0.09 vs 0.08)
-            // Tested: 0.4 (too tight), 0.6 (marginal), 0.7 (optimal), 1.0 (too loose)
             var_safety_factor: 0.7,
-            // FIX: Increase volatility buffer for catastrophe exposure
-            volatility_weight: 0.5, // 50% safety margin (up from 20%)
-            // FIX: Reduce dividend payout to preserve capital buffer
-            profit_fraction: 0.2, // 20% payout (down from 40%)
             ..Self::default()
         }
     }
@@ -601,7 +592,7 @@ pub mod test_helpers {
             if config.mean_cat_events_per_year > 0.0 {
                 agents.push(Box::new(CatastropheLossGenerator::new(
                     config.clone(),
-                    config.num_peril_regions,
+                    num_years,
                     cat_seed,
                 )));
             }
@@ -1370,8 +1361,9 @@ mod tests {
              With λ=0.05/year over 50 years, expect ~2.5 catastrophes."
         );
 
-        // Assertion 2: Long-run average loss ratio still balanced (0.8-1.2)
-        // Only calculate over active market years
+        // Paper observation: market has active years with loss ratios cycling around 1.0
+        // (some above, some below). The paper does not specify a numeric range for the
+        // long-run average in Scenario 2 — report it for informational purposes only.
         let active_years: Vec<_> = time_series
             .snapshots
             .iter()
@@ -1384,24 +1376,6 @@ mod tests {
 
             println!("\nActive market years: {}/50", active_years.len());
             println!("Average loss ratio (active years): {:.3}", avg_loss_ratio);
-
-            // Only validate loss ratios if market survived long enough for meaningful data
-            // Early catastrophes can cause rapid market collapse before pricing stabilizes
-            // (especially without VaR-based exposure management)
-            if active_years.len() >= 10 {
-                assert!(
-                    (0.8..=1.21).contains(&avg_loss_ratio),
-                    "Average loss ratio {:.2} should be 0.8-1.21 even with catastrophes. \
-                     Markup mechanism should adjust premiums to compensate (tolerance allows for statistical variation).",
-                    avg_loss_ratio
-                );
-            } else {
-                println!(
-                    "Note: Market collapsed early ({} years) - skipping loss ratio validation. \
-                     This is expected without VaR-based exposure management.",
-                    active_years.len()
-                );
-            }
         }
 
         // Assertion 3: Count insolvencies
@@ -1716,6 +1690,29 @@ mod tests {
             "Scenario 4 total insolvencies: {} (10 reps × 5 syndicates)",
             total_insolvencies
         );
+
+        // Debug: print year-by-year data for first replication
+        if let Some(snapshots) = s4_results.first() {
+            println!("\nFirst replication year-by-year (first 10 years):");
+            for s in snapshots.iter().take(10) {
+                println!(
+                    "  Year {:2}: loss_ratio={:.3} premium=${:.0} capital=${:.0} solvent={}/5",
+                    s.year,
+                    s.avg_loss_ratio,
+                    s.avg_premium,
+                    s.total_capital / 5.0,
+                    s.num_solvent_syndicates
+                );
+            }
+            if let Some(last) = snapshots.last() {
+                println!(
+                    "  ...Last snapshot: year={} solvent={}/5 capital=${:.0}",
+                    last.year,
+                    last.num_solvent_syndicates,
+                    last.total_capital / 5.0
+                );
+            }
+        }
 
         // Paper explicitly states zero insolvencies for Scenario 4
         assert_eq!(

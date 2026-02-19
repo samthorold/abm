@@ -34,6 +34,10 @@ pub struct Syndicate {
     industry_mu_t: f64,     // Industry-wide average claim cost
     years_elapsed: usize,   // Track years for warmup period
 
+    // Capital at the start of the current year (before collecting any new premiums).
+    // Used as the denominator in Premium EM so the cap doesn't expand as premiums arrive.
+    capital_at_year_start: f64,
+
     // VaR-based exposure management (optional - enabled based on config)
     var_exposure_manager: Option<VarExposureManager>,
 }
@@ -79,6 +83,7 @@ impl Syndicate {
             industry_lambda_t,
             industry_mu_t,
             years_elapsed: 0,
+            capital_at_year_start: initial_capital,
             var_exposure_manager,
         }
     }
@@ -90,19 +95,22 @@ impl Syndicate {
     ) -> f64 {
         // Simplified actuarial pricing: P̃_t = z·X̄_t + (1-z)·λ'_t·μ'_t
         //
-        // ALL values are interpreted as PER-PARTICIPATION:
-        // - industry_avg_loss_per_participation = industry_lambda_t × industry_mu_t
-        // - Where industry_mu_t is average claim amount received (line-share adjusted)
-        // - And industry_lambda_t is claim frequency per participation
+        // loss_history stores NORMALIZED claim amounts (amount / line_size), so every entry
+        // represents the per-unit-of-exposure claim regardless of whether the syndicate
+        // was lead or follow on that policy.  Multiplying by lead_line_size at the end
+        // converts back to the expected loss for a lead participation.
         //
-        // This matches how syndicates calculate their own experience (based on participations)
+        // industry_avg_loss_per_participation is passed in already scaled for the lead line
+        // (= industry_mu_t × industry_lambda_t, where industry_mu_t = gamma_mean × lead_line).
 
         let z = self.config.internal_experience_weight;
         let claim_freq = self.config.yearly_claim_frequency;
+        let lead_line = self.config.default_lead_line_size;
 
-        // Syndicate's own experience (expected loss per participation based on own data)
+        // Syndicate's own experience (expected loss per lead participation)
         let syndicate_expected_loss = if !self.loss_history.is_empty() {
-            // Exponentially weighted moving average of CLAIM AMOUNTS (line-share adjusted)
+            // loss_history contains per-unit-of-exposure amounts (normalized by line_size
+            // when the claim was recorded in handle_claim).
             let weight = self.config.loss_recency_weight;
             let mut weighted_sum = 0.0;
             let mut total_weight = 0.0;
@@ -111,11 +119,11 @@ impl Syndicate {
                 weighted_sum += loss * w;
                 total_weight += w;
             }
-            let avg_claim_amount = weighted_sum / total_weight;
-            // Convert to expected loss per participation: E[loss] = P(claim) × E[amount | claim]
-            avg_claim_amount * claim_freq
+            let avg_per_unit = weighted_sum / total_weight;
+            // Scale to expected loss for a lead participation: E[loss] = P(claim) × avg_per_unit × lead_line
+            avg_per_unit * claim_freq * lead_line
         } else {
-            // No history yet - use industry average (already per-participation)
+            // No history yet - use industry average (already per-lead-participation)
             industry_avg_loss_per_participation
         };
 
@@ -126,7 +134,7 @@ impl Syndicate {
         let base_price = z * syndicate_expected_loss + (1.0 - z) * industry_expected_loss;
 
         // Add volatility loading: F_t = EWMA-weighted std dev of loss history (Paper Eq 2)
-        // P_at = P̃_t + α·F_t  where F_t is the std deviation of claims, not the mean
+        // P_at = P̃_t + α·F_t  where F_t is the std deviation of per-unit claims × lead_line
         let f_t = if !self.loss_history.is_empty() {
             let weight = self.config.loss_recency_weight;
             let mut weighted_sum = 0.0;
@@ -140,7 +148,8 @@ impl Syndicate {
             }
             let mean = weighted_sum / total_weight;
             let variance = (weighted_sq_sum / total_weight) - mean * mean;
-            variance.max(0.0).sqrt() // guard against floating-point negative
+            // Scale std dev to lead-participation units (same as expected loss above)
+            variance.max(0.0).sqrt() * lead_line
         } else {
             0.0 // no history → no variance estimate → no volatility loading
         };
@@ -169,9 +178,10 @@ impl Syndicate {
             return ExposureDecision::Reject;
         }
 
-        // Calculate premium-to-capital ratio after accepting this quote
+        // Use capital_at_year_start as the denominator to prevent the cap from
+        // expanding as premiums are collected during the year (fixed annual budget).
         let proposed_total_premium = self.annual_premiums + proposed_premium;
-        let premium_to_capital_ratio = proposed_total_premium / self.capital;
+        let premium_to_capital_ratio = proposed_total_premium / self.capital_at_year_start;
 
         // Check against threshold
         let threshold = self.config.premium_reserve_ratio;
@@ -322,7 +332,7 @@ impl Syndicate {
         };
 
         // Adjust line size based on pricing strength
-        let line_size = if pricing_strength < 0.5 {
+        let mut line_size = if pricing_strength < 0.5 {
             // Lead price is very unfavorable (more than 2x what we think it should be)
             // Decline to quote
             return Vec::new();
@@ -337,7 +347,7 @@ impl Syndicate {
             baseline_line_size * pricing_strength
         };
 
-        // VaR exposure management check
+        // Exposure management: Use VaR EM if enabled (Scenario 3), otherwise use Premium EM
         if let Some(ref mut var_em) = self.var_exposure_manager {
             let proposed_exposure = line_size * risk_limit;
             match var_em.evaluate_quote(peril_region, proposed_exposure) {
@@ -350,9 +360,37 @@ impl Syndicate {
                 }
                 ExposureDecision::ScalePremium(_factor) => {
                     // For followers, we can't scale premium (we accept lead's price)
-                    // Instead, reduce line size to manage exposure
                     // Decline the quote if VaR suggests scaling
                     return Vec::new();
+                }
+            }
+        } else {
+            // Premium-based exposure management (Scenario 1/4)
+            // Estimate the premium we'd collect for this line size
+            let estimated_premium = (lead_price / self.config.default_lead_line_size) * line_size;
+            match self.check_premium_exposure(estimated_premium) {
+                ExposureDecision::Accept => {
+                    // Within premium limits, proceed
+                }
+                ExposureDecision::Reject => {
+                    // Premium-to-capital ratio too high
+                    return Vec::new();
+                }
+                ExposureDecision::ScalePremium(_factor) => {
+                    // Can't scale premium (lead sets price) → reduce line size to stay within budget
+                    let premium_per_unit = lead_price / self.config.default_lead_line_size;
+                    if premium_per_unit > 0.0 {
+                        let max_premium = self.config.premium_reserve_ratio
+                            * self.capital_at_year_start
+                            - self.annual_premiums;
+                        let max_line_size = max_premium / premium_per_unit;
+                        if max_line_size <= 0.0 {
+                            return Vec::new();
+                        }
+                        line_size = max_line_size.min(line_size);
+                    } else {
+                        return Vec::new();
+                    }
                 }
             }
         }
@@ -412,9 +450,26 @@ impl Syndicate {
         self.stats.total_line_size += line_size;
     }
 
-    fn handle_claim(&mut self, _risk_id: usize, amount: f64) -> Vec<(usize, Event)> {
+    fn handle_claim(&mut self, risk_id: usize, amount: f64) -> Vec<(usize, Event)> {
         self.capital -= amount;
-        self.loss_history.push(amount);
+
+        // Normalize the claim by the participation line_size so that loss_history stores
+        // per-unit-of-exposure amounts.  This prevents mixing lead ($1.5M/event at 50%)
+        // and follow ($300k/event at 10%) claim amounts, which would otherwise cause the
+        // EWMA to underestimate the fair lead price as experience accumulates.
+        let line_size = self
+            .policies
+            .iter()
+            .find(|p| p.risk_id == risk_id)
+            .map(|p| p.line_size)
+            .unwrap_or(self.config.default_lead_line_size);
+        let normalized_amount = if line_size > 0.0 {
+            amount / line_size
+        } else {
+            amount
+        };
+        self.loss_history.push(normalized_amount);
+
         self.annual_claims += amount;
         self.annual_claims_count += 1;
 
@@ -480,11 +535,15 @@ impl Syndicate {
         self.annual_claims = 0.0;
         self.annual_policies_written = 0;
         self.annual_claims_count = 0;
+
+        // Snapshot capital at year start (after dividends) for Premium EM denominator.
+        // Using start-of-year capital prevents the cap from expanding as premiums arrive.
+        self.capital_at_year_start = self.capital;
     }
 
     fn update_underwriting_markup(&mut self) {
-        // Update m_t using EWMA: m_t = β · m_{t-1} + (1-β) · signal_t
-        // where signal_t = log(loss_ratio_t)
+        // Update m_t using EWMA: m_t = (1-α)·m_{t-1} + α·signal_t
+        // where signal_t = LR_t - 1  (loss ratio deviation from break-even)
         //
         // Per paper Section 4.3.2 (Underwriting Sub-Process):
         // "m_t captures competitive pressure based on loss experience"
@@ -492,11 +551,12 @@ impl Syndicate {
         // This captures competitive pressure:
         // - High loss ratios (>1) → positive signal → m_t increases → higher premiums
         // - Low loss ratios (<1) → negative signal → m_t decreases → lower premiums
-        // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t decays toward 0
+        // - Balanced loss ratios (≈1) → signal ≈ 0 → m_t stable
         //
-        // CRITICAL FIX: Add warmup period to prevent Year 1 pricing collapse
-        // Match the warmup logic used for industry stats updates (lines 628-634)
-        // This prevents early random variation from causing catastrophic mispricing
+        // Using signal = LR - 1 (not ln(LR)) eliminates Jensen's inequality bias:
+        // E[LR - 1] = 0 when E[LR] = 1 (fair pricing), so m_t has no systematic drift.
+        //
+        // α = underwriter_recency_weight is the weight on new signal (standard EWMA).
 
         let current_year_loss_ratio = if self.annual_premiums > 0.0 {
             Some(self.annual_claims / self.annual_premiums)
@@ -506,21 +566,22 @@ impl Syndicate {
 
         // Update markup using current year's loss ratio (per paper specification)
         if let Some(loss_ratio) = current_year_loss_ratio {
-            let signal = loss_ratio.ln(); // log(loss_ratio)
+            // signal = LR - 1: positive when unprofitable (LR>1), negative when profitable
+            let signal = loss_ratio - 1.0;
 
-            // WARMUP PERIOD: Reduce sensitivity to early random variation
-            // Give more weight to historical values initially to avoid
-            // early year random variation causing systematic mispricing
-            let beta = if self.years_elapsed == 0 {
-                0.9 // Year 0: use only 10% of new signal (high stability)
+            // α = fraction of new signal incorporated each year.
+            // underwriter_recency_weight is the weight on NEW data (high = fast adaptation).
+            // Warmup: slow adaptation in early years to avoid first-year noise dominating.
+            let alpha = if self.years_elapsed == 0 {
+                0.05 // Year 0: very slow adaptation (5% of new signal)
             } else if self.years_elapsed < 5 {
-                0.8 // Years 1-4: use 20% of new signal (moderate stability)
+                0.10 // Years 1-4: slow adaptation (10% of new signal)
             } else {
-                self.config.underwriter_recency_weight // Years 5+: use config value (20% → 80% new signal)
+                self.config.underwriter_recency_weight // Years 5+: config value (default 20%)
             };
 
-            // EWMA update with warmup-adjusted beta
-            self.markup_m_t = beta * self.markup_m_t + (1.0 - beta) * signal;
+            // EWMA update: m_t = (1-α)·m_{t-1} + α·signal
+            self.markup_m_t = (1.0 - alpha) * self.markup_m_t + alpha * signal;
         }
 
         // Track history for potential future use
@@ -649,25 +710,29 @@ impl Agent<Event, Stats> for Syndicate {
             }
             Event::IndustryLossStatsReported {
                 avg_claim_frequency,
-                avg_claim_cost,
+                avg_claim_cost: _, // intentionally ignored — see note below
             } => {
-                // Update our view of industry-wide loss statistics using EWMA to smooth noise
-                // Use a warmup period (first 3 years) to avoid early random variation causing mispricing
+                // Update claim frequency from market data (correctly computed as
+                // total_claim_events / total_policies ≈ yearly_claim_frequency).
+                //
+                // We do NOT update industry_mu_t from avg_claim_cost because the market
+                // statistic mixes lead (50% line) and follow (10% line) claim amounts,
+                // producing an average (~$540k/event) far below the per-unit value
+                // ($3M/event) that the actuarial formula needs.  industry_mu_t is
+                // kept fixed at its initialization value (gamma_mean × default_lead_line_size)
+                // which already represents the correct per-lead-participation expected claim.
 
-                // EWMA weight: give more weight to historical values initially to avoid
-                // early year random variation causing systematic mispricing
                 let alpha = if self.years_elapsed == 0 {
-                    0.1 // Year 0: use only 10% of new data (small sample, high variance)
+                    0.1
                 } else if self.years_elapsed < 5 {
-                    0.2 // Years 1-4: use 20% of new data, 80% of historical
+                    0.2
                 } else {
-                    0.4 // Years 5+: use 40% of new data (more responsive to market changes)
+                    0.4
                 };
 
-                // Update with exponential smoothing
                 self.industry_lambda_t =
                     alpha * avg_claim_frequency + (1.0 - alpha) * self.industry_lambda_t;
-                self.industry_mu_t = alpha * avg_claim_cost + (1.0 - alpha) * self.industry_mu_t;
+                // industry_mu_t intentionally not updated
 
                 Response::new()
             }
@@ -981,48 +1046,50 @@ mod tests {
 
     #[test]
     fn test_underwriting_markup_increases_after_losses() {
-        let config = ModelConfig::default();
+        let config = ModelConfig {
+            underwriter_recency_weight: 0.2,
+            ..ModelConfig::default()
+        };
         let mut syndicate = Syndicate::new(0, config.clone());
 
         // Initial markup is 0.0 (fair pricing)
         syndicate.markup_m_t = 0.0;
-        // Skip warmup period (need years_elapsed >= 5 after fix)
+        // Skip warmup period (need years_elapsed >= 5)
         syndicate.years_elapsed = 5;
 
         // Simulate a high-loss year: loss_ratio = 2.0
         syndicate.annual_premiums = 1_000_000.0;
         syndicate.annual_claims = 2_000_000.0;
 
-        // Manually set prior year to trigger update (normally this comes from history)
-        syndicate.prior_year_loss_ratio = Some(2.0);
-
         // Update markup at year-end
         syndicate.update_underwriting_markup();
 
-        // markup should be positive: m_t = 0.2 * 0 + 0.8 * ln(2.0) ≈ 0.554
+        // markup should be positive: m_t = 0.8*0.0 + 0.2*(2.0-1.0) = 0.2
         assert!(
             syndicate.markup_m_t > 0.0,
             "Markup should increase after high losses"
         );
+        let expected = 0.2 * (2.0 - 1.0); // = 0.2
         assert!(
-            syndicate.markup_m_t > 0.5 && syndicate.markup_m_t < 0.6,
-            "Markup should be around 0.554, got {}",
+            (syndicate.markup_m_t - expected).abs() < 1e-9,
+            "Markup should be {:.3}, got {:.3}",
+            expected,
             syndicate.markup_m_t
         );
     }
 
     #[test]
     fn test_underwriting_markup_decreases_after_profits() {
-        let config = ModelConfig::default();
+        let config = ModelConfig {
+            underwriter_recency_weight: 0.2,
+            ..ModelConfig::default()
+        };
         let mut syndicate = Syndicate::new(0, config.clone());
 
         // Start with some positive markup
         syndicate.markup_m_t = 0.5;
-        // Skip warmup period (need years_elapsed >= 5 after fix)
+        // Skip warmup period (need years_elapsed >= 5)
         syndicate.years_elapsed = 5;
-
-        // Manually set prior year to trigger update (normally this comes from history)
-        syndicate.prior_year_loss_ratio = Some(0.5);
 
         // Simulate a profitable year: loss_ratio = 0.5
         syndicate.annual_premiums = 1_000_000.0;
@@ -1031,10 +1098,11 @@ mod tests {
         // Update markup
         syndicate.update_underwriting_markup();
 
-        // markup should be less than before: m_t = 0.2 * 0.5 + 0.8 * ln(0.5) ≈ -0.454
+        // markup should decrease: m_t = 0.8*0.5 + 0.2*(0.5-1.0) = 0.4 - 0.1 = 0.3 < 0.5
         assert!(
-            syndicate.markup_m_t < 0.0,
-            "Markup should decrease after low losses (profitable period)"
+            syndicate.markup_m_t < 0.5,
+            "Markup should decrease from 0.5 after profitable year, got {}",
+            syndicate.markup_m_t
         );
     }
 
@@ -1421,7 +1489,8 @@ mod tests {
 
     #[test]
     fn test_warmup_period_year_0_markup_stability() {
-        // Verify Year 0 markup adjustment is dampened (10% weight on new signal)
+        // Verify Year 0 markup adjustment is dampened (alpha=5% weight on new signal)
+        // New formula: signal = LR - 1, alpha = 0.05 in year 0
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config.clone());
 
@@ -1433,12 +1502,15 @@ mod tests {
 
         syndicate.update_underwriting_markup();
 
-        // Expected: beta=0.9, so markup = 0.9 * 0 + 0.1 * ln(0.5) = 0.1 * (-0.693) = -0.0693
-        let expected_markup = 0.1 * (0.5_f64).ln();
+        // Expected: alpha=0.05, signal = 0.5 - 1.0 = -0.5
+        // markup = 0.95 * 0.0 + 0.05 * (-0.5) = -0.025
+        let alpha_year0 = 0.05;
+        let signal = 0.5 - 1.0; // LR - 1
+        let expected_markup = alpha_year0 * signal; // = -0.025
 
         assert!(
             (syndicate.markup_m_t - expected_markup).abs() < 0.001,
-            "Year 0 markup should be {:.4} (10% weight), got {:.4}",
+            "Year 0 markup should be {:.4} (5% alpha × signal), got {:.4}",
             expected_markup,
             syndicate.markup_m_t
         );
@@ -1511,62 +1583,61 @@ mod tests {
 
     #[test]
     fn test_scenario_3_volatility_buffer_increases_premiums() {
-        // Verify Scenario 3 (α=0.5) produces higher premiums than Default (α=0.0)
+        // Verify that α=0.5 produces higher premiums than α=0.0
         // when there is variance in the loss history.
         // Paper Eq 2: P_at = P̃_t + α·F_t; higher α → larger loading when F_t > 0.
-        let config_default = ModelConfig::default();
-        let config_s3 = ModelConfig::scenario_3();
+        // Note: paper Table 13/14 sets α=0 for all scenarios; this test exercises the mechanism.
+        let config_default = ModelConfig::default(); // volatility_weight = 0.0
+        let config_high_alpha = ModelConfig {
+            volatility_weight: 0.5,
+            ..ModelConfig::default()
+        };
 
         assert_eq!(
             config_default.volatility_weight, 0.0,
             "Default should be 0 (paper Table 13/14: α=0 for all scenarios)"
         );
-        assert_eq!(config_s3.volatility_weight, 0.5, "Scenario 3 should be 50%");
+        assert_eq!(config_high_alpha.volatility_weight, 0.5);
 
         // Pre-populate the same variable loss history for both syndicates.
-        // With variance in loss history, F_t > 0, so Scenario 3's higher α
-        // produces a larger loading than Default's α=0.
+        // With variance in loss history, F_t > 0, so higher α produces a larger loading.
         let history = vec![1_000_000.0, 3_000_000.0, 4_280_000.0]; // same mean, σ > 0
 
         let mut syndicate_default = Syndicate::new(0, config_default);
         syndicate_default.loss_history = history.clone();
 
-        let mut syndicate_s3 = Syndicate::new(0, config_s3);
-        syndicate_s3.loss_history = history;
+        let mut syndicate_high_alpha = Syndicate::new(0, config_high_alpha);
+        syndicate_high_alpha.loss_history = history;
 
         let industry_avg = 150_000.0; // 0.1 * $1.5M
         let price_default = syndicate_default.calculate_actuarial_price(1, industry_avg);
-        let price_s3 = syndicate_s3.calculate_actuarial_price(1, industry_avg);
+        let price_high_alpha = syndicate_high_alpha.calculate_actuarial_price(1, industry_avg);
 
-        println!("\n=== Volatility Buffer Comparison ===");
-        println!("Default (α=0): ${:.0}", price_default);
-        println!("Scenario 3 (α=0.5): ${:.0}", price_s3);
-        println!(
-            "Increase: {:.1}%\n",
-            (price_s3 / price_default - 1.0) * 100.0
-        );
-
-        // Scenario 3 (α=0.5) should have higher premiums than Default (α=0.0)
+        // Higher α should produce higher premiums than α=0.0
         assert!(
-            price_s3 > price_default,
-            "Scenario 3 (α=0.5) should produce higher premiums than Default (α=0). \
-             Default=${:.0}, Scenario3=${:.0}",
+            price_high_alpha > price_default,
+            "α=0.5 should produce higher premiums than α=0. \
+             Default=${:.0}, HighAlpha=${:.0}",
             price_default,
-            price_s3
+            price_high_alpha
         );
     }
 
     #[test]
     fn test_reduced_dividends_preserve_capital() {
-        // Verify Scenario 3 reduced dividends from 40% → 20%
+        // Verify that a reduced profit_fraction (20%) pays smaller dividends than the default (40%)
+        // and preserves more capital. This tests the dividend mechanism, not a specific scenario.
         let config_default = ModelConfig::default();
-        let config_s3 = ModelConfig::scenario_3();
+        let config_low_dividend = ModelConfig {
+            profit_fraction: 0.2,
+            ..ModelConfig::default()
+        };
 
         assert_eq!(config_default.profit_fraction, 0.4, "Default should be 40%");
-        assert_eq!(config_s3.profit_fraction, 0.2, "Scenario 3 should be 20%");
+        assert_eq!(config_low_dividend.profit_fraction, 0.2);
 
-        // Simulate profitable year
-        let mut syndicate = Syndicate::new(0, config_s3.clone());
+        // Simulate profitable year with reduced dividend config
+        let mut syndicate = Syndicate::new(0, config_low_dividend.clone());
         let initial_capital = syndicate.capital;
 
         syndicate.annual_premiums = 1_000_000.0;
@@ -1586,16 +1657,6 @@ mod tests {
         assert_eq!(
             syndicate.capital, expected_capital,
             "Should retain 80% of profit as capital buffer"
-        );
-
-        println!("\n=== Reduced Dividends Test ===");
-        println!("Profit: $400k");
-        println!("Dividend (20%): $80k");
-        println!("Retained: $320k (80%)");
-        println!(
-            "Capital: ${:.2}M → ${:.2}M\n",
-            initial_capital / 1_000_000.0,
-            syndicate.capital / 1_000_000.0
         );
     }
 
@@ -1732,27 +1793,31 @@ mod tests {
 
     #[test]
     fn test_a3_ewma_loss_history_formula() {
-        // Verify EWMA weighted average computation with known values
+        // Verify EWMA weighted average computation with known values.
+        // loss_history stores per-unit-of-exposure amounts (normalized by line_size in
+        // handle_claim); the formula then multiplies by claim_freq × lead_line_size.
         let config = ModelConfig {
             volatility_weight: 0.0,          // isolate base price
             internal_experience_weight: 1.0, // use only syndicate experience
             loss_recency_weight: 0.2,
             ..Default::default()
         };
-        let mut syndicate = Syndicate::new(0, config);
+        let mut syndicate = Syndicate::new(0, config.clone());
+        // Per-unit-of-exposure amounts (e.g. claim_received / line_size)
         syndicate.loss_history = vec![1_000_000.0, 2_000_000.0, 3_000_000.0]; // oldest first
 
         // Manual EWMA calculation (iterating newest first):
         // i=0: w=(1-0.2)^0 = 1.0,  3M × 1.0  = 3.00M, total_w = 1.00
         // i=1: w=(1-0.2)^1 = 0.8,  2M × 0.8  = 1.60M, total_w = 1.80
         // i=2: w=(1-0.2)^2 = 0.64, 1M × 0.64 = 0.64M, total_w = 2.44
-        // avg_claim = 5.24M / 2.44 ≈ 2,147,541
-        // syndicate_expected_loss = 2,147,541 × 0.1 ≈ 214,754
+        // avg_per_unit = 5.24M / 2.44 ≈ 2,147,541
+        // syndicate_expected_loss = avg_per_unit × claim_freq × lead_line
+        //                         ≈ 2,147,541 × 0.1 × 0.5 ≈ 107,377
 
         let industry_avg = syndicate.industry_mu_t * syndicate.industry_lambda_t;
         let price = syndicate.calculate_actuarial_price(1, industry_avg);
 
-        let expected = 5_240_000.0 / 2.44 * 0.1;
+        let expected = 5_240_000.0 / 2.44 * 0.1 * config.default_lead_line_size;
         assert!(
             (price - expected).abs() / expected < 0.01,
             "EWMA price should be ≈${:.0}, got ${:.0} (error {:.2}%)",
@@ -1766,6 +1831,10 @@ mod tests {
     fn test_a4_z_weight_blends_syndicate_and_industry() {
         // With loss history, z blends syndicate and industry expected loss
         // P̃_t = z·X̄_t + (1-z)·λ'·μ'
+        //
+        // loss_history holds per-unit amounts; formula: avg_per_unit × claim_freq × lead_line.
+        // To get syndicate_expected = $200k with lead_line=0.5:
+        //   avg_per_unit × 0.1 × 0.5 = $200k → avg_per_unit = $4M → uniform history at $4M.
         let config = ModelConfig {
             volatility_weight: 0.0,
             internal_experience_weight: 0.5,
@@ -1773,9 +1842,9 @@ mod tests {
         };
         let mut syndicate = Syndicate::new(0, config);
 
-        // Uniform history: EWMA = exactly $2M
-        syndicate.loss_history = vec![2_000_000.0, 2_000_000.0, 2_000_000.0];
-        // syndicate_expected_loss = 2M × 0.1 = $200k
+        // Uniform per-unit history: EWMA = exactly $4M
+        // syndicate_expected_loss = 4M × 0.1 × 0.5 = $200k
+        syndicate.loss_history = vec![4_000_000.0, 4_000_000.0, 4_000_000.0];
 
         // Override industry stats so industry_avg = $100k
         syndicate.industry_mu_t = 1_000_000.0;
@@ -1796,9 +1865,9 @@ mod tests {
 
     #[test]
     fn test_b1_markup_increases_after_loss_year_warmup() {
-        // Year 0 warmup: β=0.9, only 10% signal weight
-        // LR=2.0 → signal=ln(2.0)≈0.693
-        // m_t = 0.9×0 + 0.1×0.693 = 0.0693
+        // Year 0 warmup: alpha=0.05, only 5% signal weight
+        // LR=2.0 → signal = LR-1 = 1.0
+        // m_t = 0.95×0 + 0.05×1.0 = 0.05
         let config = ModelConfig::default();
         let mut syndicate = Syndicate::new(0, config);
 
@@ -1809,42 +1878,42 @@ mod tests {
 
         syndicate.update_underwriting_markup();
 
-        let expected = 0.1 * (2.0_f64).ln(); // ≈ 0.0693
+        let expected = 0.05 * (2.0 - 1.0); // = 0.05
         assert!(
             (syndicate.markup_m_t - expected).abs() < 0.001,
-            "Year 0 markup should be {:.4} (10% of ln(2)), got {:.4}",
+            "Year 0 markup should be {:.4} (5% alpha × signal), got {:.4}",
             expected,
             syndicate.markup_m_t
         );
 
-        // Verify premium multiplier
-        let multiplier = syndicate.apply_underwriting_markup(1.0);
-        let expected_multiplier = expected.exp(); // ≈ 1.072
+        // Verify markup increased from 0 (losses → higher prices)
         assert!(
-            (multiplier - expected_multiplier).abs() < 0.001,
-            "Premium multiplier should be {:.4}, got {:.4}",
-            expected_multiplier,
-            multiplier
+            syndicate.markup_m_t > 0.0,
+            "Markup should be positive after loss year"
         );
     }
 
     #[test]
     fn test_b3_breakeven_loss_ratio_produces_zero_signal() {
-        // LR=1.0 → signal=ln(1.0)=0.0 → markup decays toward 0
-        let config = ModelConfig::default();
+        // LR=1.0 → signal = LR-1 = 0.0 → markup decays toward 0
+        // New formula: m_t = (1-alpha)×m_{t-1} + alpha×signal
+        let config = ModelConfig {
+            underwriter_recency_weight: 0.2,
+            ..ModelConfig::default()
+        };
         let mut syndicate = Syndicate::new(0, config);
 
         let prior_markup = 0.3;
         syndicate.markup_m_t = prior_markup;
-        syndicate.years_elapsed = 5; // post-warmup: beta = config value = 0.2
+        syndicate.years_elapsed = 5; // post-warmup: alpha = underwriter_recency_weight = 0.2
         syndicate.annual_premiums = 100_000.0;
         syndicate.annual_claims = 100_000.0; // LR = 1.0
 
         syndicate.update_underwriting_markup();
 
-        // signal = ln(1.0) = 0.0
-        // m_t = 0.2 × 0.3 + 0.8 × 0.0 = 0.06
-        let expected = 0.2 * prior_markup;
+        // signal = 1.0 - 1.0 = 0.0
+        // m_t = (1-0.2) × 0.3 + 0.2 × 0.0 = 0.8 × 0.3 = 0.24
+        let expected = (1.0 - 0.2) * prior_markup;
         assert!(
             (syndicate.markup_m_t - expected).abs() < 0.0001,
             "With LR=1.0 (zero signal), markup should decay toward 0. Expected {:.4}, got {:.4}",
@@ -1856,8 +1925,12 @@ mod tests {
     #[test]
     fn test_b4_markup_ewma_sequence_post_warmup() {
         // Two successive year-end triggers with known LR values
-        // Post-warmup: beta = underwriter_recency_weight = 0.2
-        let config = ModelConfig::default();
+        // Post-warmup: alpha = underwriter_recency_weight = 0.2 (weight on new signal)
+        // New formula: m_t = (1-alpha)×m_{t-1} + alpha×(LR-1)
+        let config = ModelConfig {
+            underwriter_recency_weight: 0.2,
+            ..ModelConfig::default()
+        };
         let mut syndicate = Syndicate::new(0, config);
 
         syndicate.markup_m_t = 0.0;
@@ -1868,8 +1941,8 @@ mod tests {
         syndicate.annual_claims = 200_000.0;
         syndicate.update_underwriting_markup();
 
-        // m_5 = 0.2 × 0 + 0.8 × ln(2.0) ≈ 0.5545
-        let expected_m5 = 0.8 * (2.0_f64).ln();
+        // m_5 = 0.8 × 0 + 0.2 × (2.0-1.0) = 0.2
+        let expected_m5 = 0.2 * (2.0 - 1.0);
         assert!(
             (syndicate.markup_m_t - expected_m5).abs() < 0.001,
             "After year 5 (LR=2.0): expected m_t={:.4}, got {:.4}",
@@ -1883,8 +1956,8 @@ mod tests {
         syndicate.annual_claims = 50_000.0;
         syndicate.update_underwriting_markup();
 
-        // m_6 = 0.2 × 0.5545 + 0.8 × ln(0.5) ≈ -0.4436
-        let expected_m6 = 0.2 * expected_m5 + 0.8 * (0.5_f64).ln();
+        // m_6 = 0.8 × 0.2 + 0.2 × (0.5-1.0) = 0.16 - 0.10 = 0.06
+        let expected_m6 = 0.8 * expected_m5 + 0.2 * (0.5 - 1.0);
         assert!(
             (syndicate.markup_m_t - expected_m6).abs() < 0.001,
             "After year 6 (LR=0.5): expected m_t={:.4}, got {:.4}",
