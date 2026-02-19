@@ -71,9 +71,8 @@ impl MarketStatisticsCollector {
         self.current_day = current_t;
         self.pending_reports.clear();
 
-        // Reset catastrophe tracking for new year
-        self.cat_event_occurred = false;
-        self.cat_event_total_loss = 0.0;
+        // Note: cat_event_occurred and cat_event_total_loss are reset in create_snapshot
+        // AFTER the snapshot is written, so catastrophes from this year are captured.
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -262,8 +261,10 @@ impl MarketStatisticsCollector {
                 });
         }
 
-        // Clear pending reports after creating snapshot
+        // Clear pending reports and reset cat tracking after creating snapshot
         self.pending_reports.clear();
+        self.cat_event_occurred = false;
+        self.cat_event_total_loss = 0.0;
 
         // Emit industry loss statistics and pricing statistics for syndicates to use
         vec![
@@ -311,16 +312,18 @@ impl Agent<Event, Stats> for MarketStatisticsCollector {
                 );
                 Response::events(events)
             }
-            Event::YearEndCatastropheReport {
-                year: _,
+            Event::CatastropheLossOccurred {
+                peril_region: _,
                 total_loss,
-                num_events,
             } => {
-                // Track catastrophe occurrence for current year
-                if *num_events > 0 {
-                    self.cat_event_occurred = true;
-                    self.cat_event_total_loss += total_loss;
-                }
+                // Track catastrophe occurrence in-year (not via year-end report, which races
+                // with snapshot creation due to same-timestep event ordering).
+                self.cat_event_occurred = true;
+                self.cat_event_total_loss += total_loss;
+                Response::new()
+            }
+            Event::YearEndCatastropheReport { .. } => {
+                // No longer used for cat tracking; kept for completeness.
                 Response::new()
             }
             _ => Response::new(),

@@ -50,7 +50,9 @@ impl CentralRiskRepository {
             .collect()
     }
 
-    /// Select syndicates for follow quote requests (random topology, excluding lead)
+    /// Select syndicates for follow quote requests (random topology)
+    /// Note: the dispatch loop already filters out the lead syndicate via
+    /// `if follower_id != lead_syndicate_id` before sending requests.
     fn select_syndicates_for_follow(
         &mut self,
         _risk_id: usize,
@@ -70,12 +72,19 @@ impl CentralRiskRepository {
             .collect()
     }
 
-    fn register_risk(&mut self, risk_id: usize, peril_region: usize, limit: f64, broker_id: usize) {
+    fn register_risk(
+        &mut self,
+        risk_id: usize,
+        peril_region: usize,
+        limit: f64,
+        broker_id: usize,
+        current_t: usize,
+    ) {
         let risk = Risk {
             id: risk_id,
             peril_region,
             limit,
-            expiration_time: 0, // Will be set by broker
+            expiration_time: current_t + 365, // 1-year policy
             broker_id,
         };
         self.risks.insert(risk_id, risk);
@@ -152,6 +161,7 @@ impl CentralRiskRepository {
 
         // Check if policy exists (lead selected)
         if let Some(policy) = self.policies.get(&risk_id) {
+            let lead_price = policy.lead_price;
             let mut remaining_line = 1.0 - policy.lead_line_size;
 
             if let Some(quotes) = self.follow_quotes.get(&risk_id) {
@@ -175,6 +185,7 @@ impl CentralRiskRepository {
                             risk_id,
                             syndicate_id: quote.syndicate_id,
                             line_size: allocated_line,
+                            lead_price,
                             peril_region: risk.peril_region,
                             risk_limit: risk.limit,
                         },
@@ -200,8 +211,13 @@ impl CentralRiskRepository {
         let mut events = Vec::new();
 
         if let Some(policy) = self.policies.get(&risk_id) {
+            // Cap the loss at the policy limit: insurers' liability is bounded by the risk_limit.
+            // The Gamma distribution is unbounded but policies are not.
+            let risk_limit = self.risks.get(&risk_id).map(|r| r.limit).unwrap_or(amount);
+            let claimable_amount = amount.min(risk_limit);
+
             // Apply loss to lead
-            let lead_loss = amount * policy.lead_line_size;
+            let lead_loss = claimable_amount * policy.lead_line_size;
             events.push((
                 current_t,
                 Event::ClaimReceived {
@@ -213,7 +229,7 @@ impl CentralRiskRepository {
 
             // Apply loss to followers
             for (syndicate_id, line_size) in &policy.followers {
-                let follower_loss = amount * line_size;
+                let follower_loss = claimable_amount * line_size;
                 events.push((
                     current_t,
                     Event::ClaimReceived {
@@ -236,11 +252,15 @@ impl CentralRiskRepository {
     ) -> Vec<(usize, Event)> {
         let mut events = Vec::new();
 
-        // Find all risks in the affected peril region
+        // Find all *active* (unexpired) risks in the affected peril region.
+        // Risks and policies are never removed from the HashMaps, so we must
+        // filter by expiration_time to avoid applying claims to historical entries.
         let affected_risks: Vec<usize> = self
             .risks
             .iter()
-            .filter(|(_, risk)| risk.peril_region == peril_region)
+            .filter(|(_, risk)| {
+                risk.peril_region == peril_region && risk.expiration_time >= current_t
+            })
             .map(|(id, _)| *id)
             .collect();
 
@@ -248,13 +268,21 @@ impl CentralRiskRepository {
             return events;
         }
 
-        // Distribute loss equally among affected risks (simplified)
-        let loss_per_risk = total_loss / affected_risks.len() as f64;
-
+        // total_loss is the catastrophe severity per insured (not a market aggregate).
+        // min_cat_damage_fraction × risk_limit sets the floor: each affected policy
+        // sustains at least that fraction of its limit. Apply the full sampled loss
+        // to every risk in the region, capped at the policy limit.
         for risk_id in affected_risks {
             if let Some(policy) = self.policies.get(&risk_id) {
+                let risk_limit = self
+                    .risks
+                    .get(&risk_id)
+                    .map(|r| r.limit)
+                    .unwrap_or(total_loss);
+                let claimable_loss = total_loss.min(risk_limit);
+
                 // Apply to lead
-                let lead_loss = loss_per_risk * policy.lead_line_size;
+                let lead_loss = claimable_loss * policy.lead_line_size;
                 events.push((
                     current_t,
                     Event::ClaimReceived {
@@ -266,7 +294,7 @@ impl CentralRiskRepository {
 
                 // Apply to followers
                 for (syndicate_id, line_size) in &policy.followers {
-                    let follower_loss = loss_per_risk * line_size;
+                    let follower_loss = claimable_loss * line_size;
                     events.push((
                         current_t,
                         Event::ClaimReceived {
@@ -292,7 +320,7 @@ impl Agent<Event, Stats> for CentralRiskRepository {
                 limit,
                 broker_id,
             } => {
-                self.register_risk(*risk_id, *peril_region, *limit, *broker_id);
+                self.register_risk(*risk_id, *peril_region, *limit, *broker_id, current_t);
 
                 // Select syndicates and request lead quotes (folded from BrokerSyndicateNetwork)
                 let mut events = Vec::new();
@@ -388,7 +416,7 @@ mod tests {
     fn test_register_risk() {
         let config = ModelConfig::default();
         let mut repo = CentralRiskRepository::new(config, 5, 12345);
-        repo.register_risk(1, 0, 10_000_000.0, 0);
+        repo.register_risk(1, 0, 10_000_000.0, 0, 0);
         assert_eq!(repo.stats.total_risks, 1);
         assert!(repo.risks.contains_key(&1));
     }
@@ -397,7 +425,7 @@ mod tests {
     fn test_select_lead_cheapest() {
         let config = ModelConfig::default();
         let mut repo = CentralRiskRepository::new(config, 5, 12345);
-        repo.register_risk(1, 0, 10_000_000.0, 0);
+        repo.register_risk(1, 0, 10_000_000.0, 0, 0);
         repo.register_lead_quote(1, 0, 300_000.0, 0.5);
         repo.register_lead_quote(1, 1, 250_000.0, 0.5); // Cheaper
 
@@ -419,7 +447,7 @@ mod tests {
 
         // Create 3 risks in peril region 0
         for i in 0..3 {
-            repo.register_risk(i, 0, 10_000_000.0, 0);
+            repo.register_risk(i, 0, 10_000_000.0, 0, 0);
             repo.register_lead_quote(i, 0, 300_000.0, 1.0);
             repo.select_lead(i, 0);
         }
@@ -465,8 +493,37 @@ mod tests {
     }
 
     #[test]
-    fn test_responds_to_lead_quote_accepted_with_follow_requests() {
+    fn test_lead_selection_picks_cheapest_from_three_quotes() {
+        // D3: Lead selection picks cheapest quote from 3 syndicates
         let config = ModelConfig::default();
+        let mut repo = CentralRiskRepository::new(config, 5, 12345);
+        repo.register_risk(1, 0, 10_000_000.0, 0, 0);
+
+        repo.register_lead_quote(1, 0, 200_000.0, 0.5);
+        repo.register_lead_quote(1, 1, 150_000.0, 0.5); // Cheapest
+        repo.register_lead_quote(1, 2, 250_000.0, 0.5);
+
+        let events = repo.select_lead(1, 0);
+        assert_eq!(events.len(), 1);
+
+        match &events[0].1 {
+            Event::LeadQuoteAccepted { syndicate_id, .. } => {
+                assert_eq!(
+                    *syndicate_id, 1,
+                    "Should select cheapest quote (syndicate 1 at $150k)"
+                );
+            }
+            _ => panic!("Expected LeadQuoteAccepted event"),
+        }
+    }
+
+    #[test]
+    fn test_responds_to_lead_quote_accepted_with_follow_requests() {
+        // Use a config with following enabled (S4-style) to test follow request emission
+        let config = ModelConfig {
+            follow_top_k: 5,
+            ..ModelConfig::default()
+        };
         let mut repo = CentralRiskRepository::new(config, 5, 12345);
 
         // First register risk so it can be looked up

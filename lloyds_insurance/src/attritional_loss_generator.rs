@@ -112,6 +112,56 @@ mod tests {
     }
 
     #[test]
+    fn test_gamma_distribution_parameters_match_paper() {
+        // E1: Gamma(μ=$3M, COV=1.0) should produce mean≈$3M, std≈$3M
+        let config = ModelConfig::default();
+        let mut generator = AttritionalLossGenerator::new(config, 42);
+
+        let mut amounts = Vec::new();
+        for i in 0..10_000 {
+            let resp = generator.act(
+                0,
+                &Event::RiskBroadcasted {
+                    risk_id: i,
+                    peril_region: 0,
+                    limit: 10_000_000.0,
+                    broker_id: 0,
+                },
+            );
+            for (_, event) in resp.events {
+                if let Event::AttritionalLossOccurred { amount, .. } = event {
+                    amounts.push(amount);
+                }
+            }
+        }
+
+        assert!(
+            amounts.len() >= 500,
+            "Need sufficient samples, got {}",
+            amounts.len()
+        );
+
+        let mean = amounts.iter().sum::<f64>() / amounts.len() as f64;
+        let variance =
+            amounts.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / amounts.len() as f64;
+        let std_dev = variance.sqrt();
+
+        // Mean should be ≈ $3M (±5%)
+        assert!(
+            (mean - 3_000_000.0).abs() / 3_000_000.0 < 0.05,
+            "Sample mean ${:.0} should be ≈$3M (±5%)",
+            mean
+        );
+
+        // With COV=1, std_dev ≈ mean ≈ $3M (±15% due to sampling variance)
+        assert!(
+            (std_dev - 3_000_000.0).abs() / 3_000_000.0 < 0.15,
+            "Sample std_dev ${:.0} should be ≈$3M (COV=1, ±15%)",
+            std_dev
+        );
+    }
+
+    #[test]
     fn test_loss_amounts_reasonable() {
         let config = ModelConfig::default();
         let mut generator = AttritionalLossGenerator::new(config.clone(), 12345);

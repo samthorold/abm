@@ -258,6 +258,47 @@ mod tests {
     }
 
     #[test]
+    fn test_catastrophe_loss_minimum_floor() {
+        // E2: All catastrophe losses >= min_cat_damage_fraction × risk_limit
+        let config = ModelConfig {
+            mean_cat_events_per_year: 1.0, // High rate for many samples
+            min_cat_damage_fraction: 0.25,
+            risk_limit: 10_000_000.0,
+            ..Default::default()
+        };
+
+        let min_loss = config.risk_limit * config.min_cat_damage_fraction; // $2.5M
+
+        let mut generator = CatastropheLossGenerator::new(config, 100, 12345);
+        let sim_days = 100 * 365;
+
+        let mut all_losses = Vec::new();
+        for day in 0..sim_days {
+            let resp = generator.act(day, &Event::Day);
+            for (_, event) in resp.events {
+                if let Event::CatastropheLossOccurred { total_loss, .. } = event {
+                    all_losses.push(total_loss);
+                }
+            }
+        }
+
+        assert!(
+            !all_losses.is_empty(),
+            "Should generate catastrophe losses with rate=1.0 over 100 years"
+        );
+
+        for (i, &loss) in all_losses.iter().enumerate() {
+            assert!(
+                loss >= min_loss,
+                "Catastrophe loss #{} (${:.0}) should be >= minimum floor ${:.0} (0.25 × $10M)",
+                i,
+                loss,
+                min_loss
+            );
+        }
+    }
+
+    #[test]
     fn test_no_catastrophes_with_zero_rate() {
         let config = ModelConfig {
             mean_cat_events_per_year: 0.0,
