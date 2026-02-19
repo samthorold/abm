@@ -50,7 +50,9 @@ impl CentralRiskRepository {
             .collect()
     }
 
-    /// Select syndicates for follow quote requests (random topology, excluding lead)
+    /// Select syndicates for follow quote requests (random topology)
+    /// Note: the dispatch loop already filters out the lead syndicate via
+    /// `if follower_id != lead_syndicate_id` before sending requests.
     fn select_syndicates_for_follow(
         &mut self,
         _risk_id: usize,
